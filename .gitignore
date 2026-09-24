@@ -12,6 +12,7 @@ build/
 out/
 .next/
 coverage/
+*.tsbuildinfo
 
 # Variables de entorno y secretos
 .env
