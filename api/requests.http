@@ -1,0 +1,58 @@
+
+@baseUrl = http://localhost:3000/api/v1
+
+# ===== Utilidades =====
+
+### Health check
+GET {{baseUrl}}/health
+
+### Info
+GET {{baseUrl}}/info
+
+### Saludo informal
+GET {{baseUrl}}/greeting/Pablo
+
+### Saludo formal
+GET {{baseUrl}}/greeting/Pablo?formal=true
+
+# ===== Profesionales =====
+
+### Listar profesionales
+GET {{baseUrl}}/profesionales
+
+### Ver uno (reemplazá el id por uno real de la lista)
+GET {{baseUrl}}/profesionales/946c0af0-2da3-48e9-aae3-f124c8b2da6f
+
+### Ver uno filtrado por especialidad
+GET {{baseUrl}}/profesionales?especialidad=Nutrición
+
+### Crear profesional
+POST {{baseUrl}}/profesionales
+Content-Type: application/json
+
+{
+  "nombre": "Sofía Paz",
+  "especialidad": "Psicología",
+  "email": "sofia@turnero.com"
+}
+
+### Crear con datos incompletos (debería dar 400)
+POST {{baseUrl}}/profesionales
+Content-Type: application/json
+
+{
+  "nombre": "Sin especialidad"
+}
+
+### Actualizar profesional (reemplazá el id por uno real de la lista)
+PUT {{baseUrl}}/profesionales/946c0af0-2da3-48e9-aae3-f124c8b2da6f
+Content-Type: application/json
+
+{
+  "nombre": "Laura Gómez",
+  "especialidad": "Cardiología",
+  "email": "laura.updated@turnero.com"
+}
+
+### Eliminar profesional (reemplazá el id por uno real de la lista)
+DELETE {{baseUrl}}/profesionales/a8bd1e89-724c-4110-86e5-1fb2afba1367
