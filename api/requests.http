@@ -31,7 +31,7 @@ POST {{baseUrl}}/profesionales
 Content-Type: application/json
 
 {
-  "nombre": "Sofía Paz",
+  "nombre": "Sofía Pérez",
   "especialidad": "Psicología",
   "email": "sofia@turnero.com"
 }

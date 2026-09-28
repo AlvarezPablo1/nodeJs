@@ -16,6 +16,7 @@ turnero/
 |---|---------|------|
 | 1 | [Setup y primer servidor](#-lección-1-setup-y-primer-servidor) | Proyecto Node con TypeScript, Express y primeros endpoints `GET` |
 | 2 | [Rutas y CRUD en memoria](#-lección-2--rutas-y-crud-en-memoria) | CRUD de profesionales con `GET`, `POST`, `PUT` y `DELETE` sobre un array en memoria |
+| 3 | [Middlewares y validación con Zod](#-lección-3--middlewares-y-validación-con-zod) | Middlewares propios (logger, validación, errores) y validación de datos con Zod |
 
 ---
 
@@ -372,6 +373,194 @@ Content-Type: application/json
 - **`Content-Type: application/json`** → le avisa al servidor que el body es JSON (necesario para que `express.json()` lo lea).
 
 > **💡 Dato extra:** como los ids se generan de nuevo en cada reinicio, antes de probar `GET /:id`, `PUT` o `DELETE` hay que listar los profesionales y copiar un id real.
+
+---
+
+## 🔐 Lección 3 · Middlewares y validación con Zod
+
+En la lección anterior validábamos a mano (`if (!nombre || ...)`) dentro de cada endpoint. Ahora sacamos esa lógica a **middlewares reutilizables** y usamos **Zod** para describir cómo tienen que ser los datos.
+
+### 1) ¿Qué es un middleware?
+
+Una función con la forma **`(req, res, next) => {}`** que se ejecuta **en el medio** entre que llega la petición y responde el endpoint. Puede:
+
+- **Seguir** → llamar a **`next()`** para pasar al siguiente middleware/endpoint.
+- **Cortar** → responder (`res.status(...).json(...)`) y no llamar a `next()`.
+
+```
+petición → express.json() → logger → validarParams → validarBody → endpoint → respuesta
+```
+
+- **`app.use(middleware)`** → se aplica a **todas** las rutas.
+- **`app.get(ruta, middleware1, middleware2, handler)`** → se aplica **solo** a esa ruta, en el orden en que se escriben.
+
+### 2) Seguridad básica: ocultar `X-Powered-By`
+
+```ts
+app.disable("x-powered-by");
+```
+
+- Por defecto Express agrega el header `X-Powered-By: Express` a cada respuesta.
+- Desactivarlo evita dar pistas sobre la tecnología del servidor.
+
+### 3) Middleware de logging
+
+```ts
+app.use((req, res, next) => {
+  const inicio = Date.now();
+
+  res.on("finish", () => {
+    const duracion = Date.now() - inicio;
+    console.log(`${req.method} ${req.originalUrl} → ${res.statusCode} X-response-time: ${duracion}ms`);
+  });
+
+  next();
+});
+```
+
+- **`Date.now()`** → milisegundos actuales; se guarda al entrar la petición.
+- **`res.on("finish", ...)`** → se ejecuta cuando la respuesta **ya se envió**, así conocemos el `statusCode` final y cuánto tardó.
+- **`next()`** → sin esto la petición quedaría "colgada" y nunca llegaría al endpoint.
+
+Ejemplo en consola:
+
+```
+GET /api/v1/profesionales → 200 X-response-time: 2ms
+```
+
+### 4) Zod: esquemas de validación
+
+```bash
+npm install zod
+```
+
+- **Zod** permite definir un **schema** (la forma esperada de los datos) y validar cualquier objeto contra él.
+- Va en `dependencies` (no `-D`) porque se usa **en tiempo de ejecución**, no solo al desarrollar.
+
+```ts
+import { z } from "zod";
+
+const idSchema = z.object({
+  id: z.uuid("El ID debe ser un UUID válido"),
+});
+
+const profesionalSchema = z.object({
+  nombre: z.string().trim().min(2, "El nombre debe tener al menos 2 caracteres"),
+  especialidad: z.string().trim().min(2, "La especialidad es obligatoria"),
+  email: z.email("El email no es válido"),
+});
+```
+
+| Regla | Qué valida |
+|-------|------------|
+| `z.object({...})` | Que sea un objeto con esas propiedades |
+| `z.string()` | Que sea texto |
+| `.trim()` | Saca espacios al principio y al final **antes** de validar |
+| `.min(2, "msg")` | Largo mínimo, con mensaje de error propio |
+| `z.email()` | Que tenga formato de email |
+| `z.uuid()` | Que tenga formato de UUID |
+| `z.enum(["a", "b"])` | Que sea uno de esos valores |
+| `.optional()` | Que pueda no venir |
+
+### 5) Tipos a partir del schema (`z.infer`)
+
+```ts
+type ProfesionalInput = z.infer<typeof profesionalSchema>;
+type Profesional = ProfesionalInput & { id: string };
+```
+
+- **`z.infer`** → genera el tipo de TypeScript **desde el schema**: una sola fuente de verdad, no hay que escribir el `type` a mano y mantener los dos sincronizados.
+- **`&`** (intersección) → combina tipos: `Profesional` = todo lo de `ProfesionalInput` **+** `id`.
+
+### 6) Middlewares de validación reutilizables
+
+```ts
+import type { Request, Response, NextFunction } from "express";
+
+function validarBody(schema: z.ZodType) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const resultado = schema.safeParse(req.body);
+
+    if (!resultado.success) {
+      return res.status(400).json({
+        error: "Datos inválidos",
+        detalles: resultado.error.issues.map((issue) => ({
+          campo: issue.path.join("."),
+          mensaje: issue.message,
+        })),
+      });
+    }
+
+    req.body = resultado.data;
+    next();
+  };
+}
+```
+
+- **Función que devuelve un middleware** → así se puede reusar con cualquier schema: `validarBody(profesionalSchema)`.
+- **`safeParse()`** → valida **sin tirar excepción**; devuelve `{ success: true, data }` o `{ success: false, error }`.
+  - (`parse()` en cambio tira un error si no valida.)
+- **`error.issues`** → lista de problemas; con `.map()` se arma una respuesta clara por campo.
+- **`req.body = resultado.data`** → reemplaza el body por los datos **ya limpios** (por ejemplo, con el `trim` aplicado).
+- **`validarParams`** es igual pero valida `req.params` (se usa para chequear que el `:id` sea un UUID).
+- **`import type`** → importa solo tipos; no genera código en el JavaScript final.
+
+Respuesta ante datos inválidos:
+
+```json
+{
+  "error": "Datos inválidos",
+  "detalles": [
+    { "campo": "email", "mensaje": "El email no es válido" }
+  ]
+}
+```
+
+### 7) Endpoints más limpios
+
+```ts
+app.post("/api/v1/profesionales", validarBody(profesionalSchema), (req, res) => {
+  const nuevo: Profesional = { id: randomUUID(), ...req.body };
+  profesionales.push(nuevo);
+  res.status(201).json(nuevo);
+});
+
+app.put("/api/v1/profesionales/:id", validarParams(idSchema), validarBody(profesionalSchema), (req, res) => {
+  // si llega acá, el id y el body ya son válidos
+});
+```
+
+- El endpoint ya **no valida nada**: si se ejecuta es porque los middlewares dejaron pasar la petición.
+- **Spread (`...req.body`)** → copia todas las propiedades del body dentro del nuevo objeto.
+- Un id con formato inválido ahora da **`400`** (antes daba `404`); un UUID válido que no existe sigue dando **`404`**.
+
+### 8) Middleware de manejo de errores (500)
+
+```ts
+import type { ErrorRequestHandler } from "express";
+
+const manejadorDeErrores: ErrorRequestHandler = (err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ error: "Error interno del servidor" });
+};
+
+app.use(manejadorDeErrores); // al final de todo
+```
+
+- Express lo reconoce como manejador de errores porque recibe **4 parámetros** (`err` primero).
+- Atrapa cualquier error no controlado en los endpoints y responde **`500 Internal Server Error`** en vez de romper o mostrar el stack al cliente.
+- Va **al final**, después del 404 genérico.
+
+**Orden final en `server.ts`:**
+
+1. `app.disable("x-powered-by")`
+2. `express.json()`
+3. Logger
+4. Endpoints (con sus middlewares de validación)
+5. 404 genérico (ruta no encontrada)
+6. Manejador de errores (500)
+
+> **💡 Dato extra:** probá en `requests.http` crear un profesional con `"email": "no-es-un-email"` o pedir `GET /profesionales/123`: vas a ver el `400` con el detalle de qué campo falló.
 
 ---
 
