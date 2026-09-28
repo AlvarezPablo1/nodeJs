@@ -654,6 +654,24 @@ petición → routes → validar → controller → service → repository → d
 - **Ventaja clave:** cada capa se puede cambiar sin tocar las otras. Cuando pasemos a una base de datos real, solo cambia el **repository**.
 - Convención de nombres: **`<modulo>.<capa>.ts`** → es fácil encontrar cualquier archivo.
 
+#### 🍽️ Analogía: un restaurante
+
+Pensá en un restaurante:
+
+- **El mozo (controller)** habla con el cliente: toma el pedido en el idioma del cliente y le lleva el plato. **No cocina ni decide nada.**
+- **El cocinero (service)** sabe las reglas: qué lleva cada plato, que no se sirve pescado si no está fresco, que el postre sin TACC va aparte. **No habla con clientes.**
+- **La heladera y la despensa (repository)** guardan los ingredientes. **No saben de recetas**; solo tienen o no tienen lo que les piden.
+
+| Restaurante | Capa | En el turnero |
+|-------------|------|---------------|
+| Mozo | controller | Lee `req`, llama al service y responde con `res` |
+| Cocinero | service | Si el profesional no existe → `throw new NotFoundError(...)` |
+| Heladera / despensa | repository | Busca, agrega o borra en el array; devuelve lo que hay (o `undefined`) |
+
+Si mañana el restaurante empieza a tomar pedidos **por una app** en vez de con mozos, el cocinero sigue igual. Si cambian la heladera por una **cámara frigorífica**, ni el mozo ni el cocinero se enteran.
+
+> En código: si cambiamos Express por otro framework, solo cambian las **routes** y el **controller**; si cambiamos el array por una base de datos, solo cambia el **repository**. El **service** no se toca en ninguno de los dos casos.
+
 ### 3) `server.ts` vs `app.ts`
 
 ```ts
@@ -842,6 +860,61 @@ export const manejadorDeErrores: ErrorRequestHandler = (err, req, res, next) => 
 - **`instanceof`** → chequea si el error es de nuestra clase (o de una hija, como `NotFoundError`); si lo es, usa su `status` y `message`.
 - **`entity.parse.failed`** → el error que tira `express.json()` cuando el body es un JSON mal escrito → ahora responde `400` en vez de `500`.
 - Cualquier otro error es **inesperado** → se loguea y se responde `500` sin mostrar detalles al cliente.
+
+### 11) Probar todos los casos con `requests.http`
+
+Con los ids fijos del repository, `requests.http` pasa a ser una **batería de pruebas manuales**: cubre el camino feliz y también cada error que la API tiene que devolver.
+
+#### Variables
+
+```http
+@baseUrl = http://localhost:3000/api/v1
+@idLaura = 11111111-1111-4111-8111-111111111111
+@idMartin = 22222222-2222-4222-8222-222222222222
+@idInexistente = 99999999-9999-4999-8999-999999999999
+
+### Ver uno
+GET {{baseUrl}}/profesionales/{{idLaura}}
+```
+
+- Se declaran una vez con **`@nombre = valor`** y se usan con **`{{nombre}}`**.
+- **`@idInexistente`** → un UUID **válido** que no existe: pasa la validación de Zod pero el service tira `404`.
+
+#### Peticiones con nombre: encadenar resultados
+
+```http
+### 1. Crear profesional
+# @name crear
+POST {{baseUrl}}/profesionales
+Content-Type: application/json
+
+{ "nombre": "Sofía Pérez", "especialidad": "Psicología", "email": "sofia@turnero.com" }
+
+### 2. Ver el recién creado
+GET {{baseUrl}}/profesionales/{{crear.response.body.id}}
+```
+
+- **`# @name crear`** → le da nombre a la petición.
+- **`{{crear.response.body.id}}`** → toma el `id` de **la respuesta** de esa petición. No hace falta copiar y pegar ids a mano.
+- Así se arma un **flujo completo** que se ejecuta en orden: crear → ver → actualizar → eliminar (`204`) → ver de nuevo (`404`).
+
+#### Qué casos cubre
+
+| Caso | Ejemplo | Esperado | Quién responde |
+|------|---------|----------|----------------|
+| Filtro sin resultados | `?especialidad=Odontología` | `200` con `[]` | repository (`filter` vacío) |
+| Id mal formado | `/profesionales/hola` | `400` | `validar` (params) |
+| UUID válido que no existe | `/profesionales/{{idInexistente}}` | `404` | service → `NotFoundError` |
+| Faltan campos | `{ "nombre": "Sin especialidad" }` | `400` | `validar` (body) |
+| Email inválido | `"email": "esto-no-es-un-email"` | `400` | Zod `z.email()` |
+| Nombre muy corto | `"nombre": "J"` | `400` | Zod `.min(2)` |
+| Nombre solo espacios | `"nombre": "   "` | `400` | Zod `.trim()` + `.min(2)` |
+| JSON mal escrito | coma de más al final | `400` | `manejadorDeErrores` (`entity.parse.failed`) |
+| Campo extra | `"esAdmin": true` | `201` sin `esAdmin` | Zod descarta lo que no está en el schema |
+| Ruta con typo | `/profesionalez` | `404` "Ruta no encontrada" | `rutaNoEncontrada` |
+
+- **Campo extra:** por defecto `z.object()` **elimina** las propiedades que no están en el schema. Como guardamos `resultado.data` en `req.body`, alguien no puede "colar" datos como `esAdmin` en nuestro array. Es una protección que viene gratis por usar Zod.
+- **`"   "` falla** porque `.trim()` se aplica **antes** que `.min(2)`: queda `""`, que tiene largo 0.
 
 > **💡 Dato extra:** para agregar un recurso nuevo (ej: turnos) alcanza con copiar la carpeta `modules/profesionales` como `modules/turnos`, adaptar cada capa y montar su router en `app.ts`.
 

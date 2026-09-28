@@ -1,7 +1,11 @@
-
 @baseUrl = http://localhost:3000/api/v1
+@idLaura = 11111111-1111-4111-8111-111111111111
+@idMartin = 22222222-2222-4222-8222-222222222222
+@idInexistente = 99999999-9999-4999-8999-999999999999
 
-# ===== Utilidades =====
+# =========================================================
+# ===== Utilidades (funcionan cuando termines el ejercicio 1)
+# =========================================================
 
 ### Health check
 GET {{baseUrl}}/health
@@ -13,20 +17,42 @@ GET {{baseUrl}}/info
 GET {{baseUrl}}/greeting/Pablo
 
 ### Saludo formal
+GET {{baseUrl}}/greeting/Pablo?formal=true
+
+### Saludo con formal=false explícito
+GET {{baseUrl}}/greeting/Pablo?formal=false
+
+### Saludo con formal inválido → 400
 GET {{baseUrl}}/greeting/Pablo?formal=si
 
-# ===== Profesionales =====
+# =========================================================
+# ===== Profesionales · Lectura
+# =========================================================
 
-### Listar profesionales
+### Listar todos
 GET {{baseUrl}}/profesionales
 
-### Ver uno (reemplazá el id por uno real de la lista)
-GET {{baseUrl}}/profesionales/946c0af0-2da3-48e9-aae3-f124c8b2da6f
-
-### Ver uno filtrado por especialidad
+### Filtrar por especialidad
 GET {{baseUrl}}/profesionales?especialidad=Nutrición
 
-### Crear profesional
+### Filtrar por especialidad sin resultados → 200 con []
+GET {{baseUrl}}/profesionales?especialidad=Odontología
+
+### Ver uno
+GET {{baseUrl}}/profesionales/{{idLaura}}
+
+### Ver uno con UUID válido que no existe → 404
+GET {{baseUrl}}/profesionales/{{idInexistente}}
+
+### Ver uno con id mal formado → 400
+GET {{baseUrl}}/profesionales/hola
+
+# =========================================================
+# ===== Profesionales · Flujo completo (ejecutar en orden)
+# =========================================================
+
+### 1. Crear profesional
+# @name crear
 POST {{baseUrl}}/profesionales
 Content-Type: application/json
 
@@ -36,7 +62,30 @@ Content-Type: application/json
   "email": "sofia@turnero.com"
 }
 
-### Crear con datos incompletos (debería dar 400)
+### 2. Ver el recién creado
+GET {{baseUrl}}/profesionales/{{crear.response.body.id}}
+
+### 3. Actualizar el recién creado
+PUT {{baseUrl}}/profesionales/{{crear.response.body.id}}
+Content-Type: application/json
+
+{
+  "nombre": "Sofía Pérez",
+  "especialidad": "Psicología Infantil",
+  "email": "sofia.perez@turnero.com"
+}
+
+### 4. Eliminar el recién creado → 204
+DELETE {{baseUrl}}/profesionales/{{crear.response.body.id}}
+
+### 5. Verlo después de eliminado → 404
+GET {{baseUrl}}/profesionales/{{crear.response.body.id}}
+
+# =========================================================
+# ===== Profesionales · Validaciones (todas → 400)
+# =========================================================
+
+### Crear con datos incompletos
 POST {{baseUrl}}/profesionales
 Content-Type: application/json
 
@@ -44,15 +93,87 @@ Content-Type: application/json
   "nombre": "Sin especialidad"
 }
 
-### Actualizar profesional (reemplazá el id por uno real de la lista)
-PUT {{baseUrl}}/profesionales/946c0af0-2da3-48e9-aae3-f124c8b2da6f
+### Crear con email mal formado
+POST {{baseUrl}}/profesionales
+Content-Type: application/json
+
+{
+  "nombre": "Juan Díaz",
+  "especialidad": "Traumatología",
+  "email": "esto-no-es-un-email"
+}
+
+### Crear con nombre de una letra
+POST {{baseUrl}}/profesionales
+Content-Type: application/json
+
+{
+  "nombre": "J",
+  "especialidad": "Traumatología",
+  "email": "juan@turnero.com"
+}
+
+### Crear con nombre solo espacios
+POST {{baseUrl}}/profesionales
+Content-Type: application/json
+
+{
+  "nombre": "   ",
+  "especialidad": "Traumatología",
+  "email": "juan@turnero.com"
+}
+
+### Crear con JSON mal formado (coma de más a propósito)
+POST {{baseUrl}}/profesionales
+Content-Type: application/json
+
+{
+  "nombre": "Juan Díaz",
+  "especialidad": "Traumatología",
+  "email": "juan@turnero.com",
+}
+
+### Actualizar con id mal formado
+PUT {{baseUrl}}/profesionales/hola
 Content-Type: application/json
 
 {
   "nombre": "Laura Gómez",
-  "especialidad": "Cardiología",
-  "email": "laura.updated@turnero.com"
+  "especialidad": "Kinesiología",
+  "email": "laura@turnero.com"
 }
 
-### Eliminar profesional (reemplazá el id por uno real de la lista)
-DELETE {{baseUrl}}/profesionales/a8bd1e89-724c-4110-86e5-1fb2afba1367
+# =========================================================
+# ===== Profesionales · Otros casos
+# =========================================================
+
+### Crear con campo extra → 201, pero esAdmin NO debe aparecer en la respuesta
+POST {{baseUrl}}/profesionales
+Content-Type: application/json
+
+{
+  "nombre": "Ana López",
+  "especialidad": "Dermatología",
+  "email": "ana@turnero.com",
+  "esAdmin": true
+}
+
+### Actualizar uno que no existe → 404
+PUT {{baseUrl}}/profesionales/{{idInexistente}}
+Content-Type: application/json
+
+{
+  "nombre": "Nadie",
+  "especialidad": "Ninguna",
+  "email": "nadie@turnero.com"
+}
+
+### Eliminar uno que no existe → 404
+DELETE {{baseUrl}}/profesionales/{{idInexistente}}
+
+# =========================================================
+# ===== Rutas inexistentes
+# =========================================================
+
+### Ruta con typo → 404 "Ruta no encontrada"
+GET {{baseUrl}}/profesionalez
