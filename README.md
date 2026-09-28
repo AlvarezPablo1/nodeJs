@@ -16,7 +16,7 @@ turnero/
 |---|---------|------|
 | 1 | [Setup y primer servidor](#-lección-1-setup-y-primer-servidor) | Proyecto Node con TypeScript, Express y primeros endpoints `GET` |
 | 2 | [Rutas y CRUD en memoria](#-lección-2--rutas-y-crud-en-memoria) | CRUD de profesionales con `GET`, `POST`, `PUT` y `DELETE` sobre un array en memoria |
-| 3 | [Middlewares y validación con Zod](#-lección-3--middlewares-y-validación-con-zod) | Middlewares propios (logger, validación, errores) y validación de datos con Zod |
+| 3 | [Middlewares y validación con Zod](#-lección-3--middlewares-y-validación-con-zod) | Middlewares propios (logger, validación de body/params/query, errores) y validación de datos con Zod |
 
 ---
 
@@ -560,7 +560,49 @@ app.use(manejadorDeErrores); // al final de todo
 5. 404 genérico (ruta no encontrada)
 6. Manejador de errores (500)
 
-> **💡 Dato extra:** probá en `requests.http` crear un profesional con `"email": "no-es-un-email"` o pedir `GET /profesionales/123`: vas a ver el `400` con el detalle de qué campo falló.
+### 9) Validar query params (`validarQuery`) y `res.locals`
+
+```ts
+const greetingQuerySchema = z.object({
+  formal: z.enum(["true", "false"]).optional().transform((val) => val === "true"),
+});
+
+function validarQuery(schema: z.ZodType) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const resultado = schema.safeParse(req.query);
+
+    if (!resultado.success) {
+      return res.status(400).json({ error: "Query inválido", detalles: /* ... */ });
+    }
+
+    res.locals.query = resultado.data;
+    next();
+  };
+}
+
+app.get("/api/v1/greeting/:name", validarQuery(greetingQuerySchema), (req, res) => {
+  const { name } = req.params;
+  const { formal } = res.locals.query as z.infer<typeof greetingQuerySchema>;
+
+  const message = formal ? `Good day, ${name}.` : `Hello, ${name}!`;
+  res.status(200).json({ message });
+});
+```
+
+- **`z.enum(["true", "false"])`** → el query param solo puede ser `"true"` o `"false"`; cualquier otro valor (ej: `?formal=si`) da **`400`**.
+- **`.optional()`** → si no se manda `formal`, no hay error.
+- **`.transform(fn)`** → después de validar, **convierte** el valor: el string `"true"` pasa a ser el boolean `true` (y `"false"` o ausente → `false`). Así el endpoint ya recibe un `boolean`, no un string.
+- **`res.locals`** → objeto para **pasar datos** de un middleware a los siguientes durante una misma petición.
+  - Se usa en vez de `req.query = resultado.data` porque en **Express 5 `req.query` es de solo lectura** (se recalcula cada vez que se lee), así que no se puede pisar como hacemos con `req.body`.
+- **`as z.infer<typeof greetingQuerySchema>`** → `res.locals` no tiene tipos (`any`); con `as` le decimos a TypeScript qué forma tiene, así `formal` queda tipado como `boolean`.
+
+| Petición | Respuesta |
+|----------|-----------|
+| `/greeting/Pablo` | `200` → `{ "message": "Hello, Pablo!" }` |
+| `/greeting/Pablo?formal=true` | `200` → `{ "message": "Good day, Pablo." }` |
+| `/greeting/Pablo?formal=si` | `400` → `{ "error": "Query inválido", ... }` |
+
+> **💡 Dato extra:** probá en `requests.http` crear un profesional con `"email": "no-es-un-email"`, pedir `GET /profesionales/123` o `GET /greeting/Pablo?formal=si`: vas a ver el `400` con el detalle de qué campo falló.
 
 ---
 

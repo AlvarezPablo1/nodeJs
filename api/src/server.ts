@@ -27,8 +27,9 @@ app.use((req, res, next) => {
 const PORT = 3000;
 
 //SCHEMAS DE VALIDACION
-const querySchema = z.object({
-  formal: z.enum(["true", "false"]).optional(),
+const greetingQuerySchema = z.object({
+  //".ENUM" OBLIGA QUE UNICAMENTE RECIBA, EN ESTE CASO, "TRUE" O "FALSE", Y EL ".OPTIONAL" HACE QUE SEA OPCIONAL, SI NO SE ENVIA NADA, NO DA ERROR.
+  formal: z.enum(["true", "false"]).optional().transform((val) => val === "true"),
 });
 
 const idSchema = z.object({
@@ -66,6 +67,26 @@ function validarParams(schema: z.ZodType) {
 
     next();
   }
+}
+
+function validarQuery(schema: z.ZodType) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const resultado = schema.safeParse(req.query);
+
+    if (!resultado.success) {
+      return res.status(400).json({
+        error: "Query inválido",
+        detalles: resultado.error.issues.map((issue) => ({
+          campo: issue.path.join("."),
+          mensaje: issue.message,
+        })),
+      });
+    }
+    // "RES.LOCALS" ES UN OBJETO QUE SE UTILIZA PARA ALMACENAR DATOS QUE SE PUEDEN PASAR ENTRE MIDDLEWARES Y RUTAS. 
+    // EN ESTE CASO, SE ESTÁ ALMACENANDO EL RESULTADO DE LA VALIDACIÓN DEL QUERY EN "RES.LOCALS.QUERY", PARA QUE PUEDA SER ACCEDIDO MÁS ADELANTE EN EL FLUJO DE LA PETICIÓN.
+    res.locals.query = resultado.data;
+    next();
+  };
 }
 
 function validarBody(schema: z.ZodType) {
@@ -115,13 +136,12 @@ app.get(`/${infoEndpoint}`, (req, res) => {
   });
 });
 
-app.get(`/${greetingEndpoint}`, (req, res) => {
-    const {name} = req.params;
-    const isFormal = req.query.formal === 'true';
-    const message = isFormal ? `Good day, ${name}.` : `Hello, ${name}!`;
-  res.status(200).json({
-    message: message,
-  });
+app.get(`/${greetingEndpoint}`, validarQuery(greetingQuerySchema), (req, res) => {
+  const { name } = req.params;
+  const { formal } = res.locals.query as z.infer<typeof greetingQuerySchema>;
+
+  const message = formal ? `Good day, ${name}.` : `Hello, ${name}!`;
+  res.status(200).json({ message });
 });
 
 app.get(`/${profesionalesEndpoint}/:id`, validarParams(idSchema), (req, res) => {

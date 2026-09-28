@@ -13,7 +13,7 @@ GET {{baseUrl}}/info
 GET {{baseUrl}}/greeting/Pablo
 
 ### Saludo formal
-GET {{baseUrl}}/greeting/Pablo?formal=true
+GET {{baseUrl}}/greeting/Pablo?formal=si
 
 # ===== Profesionales =====
 
