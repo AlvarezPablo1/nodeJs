@@ -6,7 +6,7 @@ Apuntes personales del proceso de aprendizaje de **Node.js**, **Express** y **Ty
 
 ```
 turnero/
-├── api/    → backend (Node.js + Express + TypeScript)
+├── api/    → backend (Node.js + Express + TypeScript) — ver estructura en la Lección 4
 └── web/    → frontend
 ```
 
@@ -17,6 +17,7 @@ turnero/
 | 1 | [Setup y primer servidor](#-lección-1-setup-y-primer-servidor) | Proyecto Node con TypeScript, Express y primeros endpoints `GET` |
 | 2 | [Rutas y CRUD en memoria](#-lección-2--rutas-y-crud-en-memoria) | CRUD de profesionales con `GET`, `POST`, `PUT` y `DELETE` sobre un array en memoria |
 | 3 | [Middlewares y validación con Zod](#-lección-3--middlewares-y-validación-con-zod) | Middlewares propios (logger, validación de body/params/query, errores) y validación de datos con Zod |
+| 4 | [Arquitectura en capas](#-lección-4--arquitectura-en-capas) | Separar el código en módulos y capas: routes, controller, service, repository; errores personalizados |
 
 ---
 
@@ -603,6 +604,246 @@ app.get("/api/v1/greeting/:name", validarQuery(greetingQuerySchema), (req, res) 
 | `/greeting/Pablo?formal=si` | `400` → `{ "error": "Query inválido", ... }` |
 
 > **💡 Dato extra:** probá en `requests.http` crear un profesional con `"email": "no-es-un-email"`, pedir `GET /profesionales/123` o `GET /greeting/Pablo?formal=si`: vas a ver el `400` con el detalle de qué campo falló.
+
+---
+
+## 🧱 Lección 4 · Arquitectura en capas
+
+Hasta ahora todo vivía en `server.ts` (más de 200 líneas). A medida que la API crece eso se vuelve inmanejable, así que lo **separamos en archivos por responsabilidad** y agrupamos todo lo de un recurso en un **módulo**.
+
+### 1) Nueva estructura
+
+```
+api/src/
+├── server.ts                      → solo levanta el servidor (app.listen)
+├── app.ts                         → arma la app: middlewares + rutas
+├── errors/
+│   └── appError.ts                → errores personalizados (AppError, NotFoundError)
+├── middlewares/
+│   ├── logger.ts
+│   ├── validar.ts                 → un único middleware para params, query y body
+│   ├── rutaNoEncontrada.ts        → 404 genérico
+│   └── manejadorDeErrores.ts      → traduce errores a respuestas HTTP
+├── shared/
+│   └── schemas.ts                 → schemas reutilizables (idParamsSchema)
+└── modules/
+    └── profesionales/
+        ├── profesionales.routes.ts
+        ├── profesionales.controller.ts
+        ├── profesionales.service.ts
+        ├── profesionales.repository.ts
+        └── profesionales.schema.ts
+```
+
+### 2) Las capas y cómo viaja una petición
+
+```
+petición → routes → validar → controller → service → repository → datos
+                                   ↑            │
+                         respuesta  └── throw NotFoundError → manejadorDeErrores
+```
+
+| Capa | Responsabilidad | Sabe de HTTP (`req`/`res`)? |
+|------|-----------------|------------------------------|
+| **routes** | Qué método + ruta llama a qué controller, y con qué validación | Sí |
+| **controller** | Leer datos de la petición, llamar al service y responder | Sí |
+| **service** | Reglas de negocio (ej: "si no existe → error 404") | **No** |
+| **repository** | Acceso a los datos (hoy un array, mañana una base de datos) | **No** |
+| **schema** | Schemas de Zod y tipos derivados | No |
+
+- **Ventaja clave:** cada capa se puede cambiar sin tocar las otras. Cuando pasemos a una base de datos real, solo cambia el **repository**.
+- Convención de nombres: **`<modulo>.<capa>.ts`** → es fácil encontrar cualquier archivo.
+
+### 3) `server.ts` vs `app.ts`
+
+```ts
+// app.ts
+export const app = express();
+
+app.disable("x-powered-by");
+app.use(express.json());
+app.use(logger);
+
+app.use("/api/v1/profesionales", profesionalesRouter);
+
+app.use(rutaNoEncontrada);
+app.use(manejadorDeErrores);
+```
+
+```ts
+// server.ts
+import { app } from "./app.js";
+
+app.listen(PORT, () => { ... });
+```
+
+- **`app.ts`** configura la aplicación pero **no** la levanta.
+- **`server.ts`** solo hace `app.listen`.
+- Separarlos permite, más adelante, **importar `app` en los tests** sin abrir un puerto real.
+- **`export` / `import`** → así se comparte código entre archivos.
+- **`.js` en los imports** → aunque el archivo sea `.ts`, con `"module": "NodeNext"` hay que escribir la extensión del archivo **compilado**.
+
+### 4) Router: rutas por módulo
+
+```ts
+// profesionales.routes.ts
+export const profesionalesRouter = Router();
+
+profesionalesRouter.get("/", validar({ query: listarProfesionalesQuerySchema }), profesionalesController.listar);
+profesionalesRouter.get("/:id", validar({ params: idParamsSchema }), profesionalesController.obtener);
+profesionalesRouter.post("/", validar({ body: profesionalSchema }), profesionalesController.crear);
+profesionalesRouter.put("/:id", validar({ params: idParamsSchema, body: profesionalSchema }), profesionalesController.actualizar);
+profesionalesRouter.delete("/:id", validar({ params: idParamsSchema }), profesionalesController.eliminar);
+```
+
+- **`Router()`** → un "mini app" con sus propias rutas.
+- **`app.use("/api/v1/profesionales", profesionalesRouter)`** → lo **monta** bajo ese prefijo: `"/"` pasa a ser `/api/v1/profesionales` y `"/:id"` pasa a ser `/api/v1/profesionales/:id`.
+- De un vistazo se ven **todas** las rutas del módulo.
+
+### 5) Un solo middleware `validar`
+
+```ts
+type Schemas = {
+  params?: z.ZodType;
+  query?: z.ZodType;
+  body?: z.ZodType;
+};
+
+export function validar(schemas: Schemas) {
+  return (req, res, next) => {
+    for (const parte of ["params", "query", "body"] as const) {
+      const schema = schemas[parte];
+      if (!schema) continue;
+
+      const resultado = schema.safeParse(req[parte]);
+      if (!resultado.success) {
+        return res.status(400).json({ error: "Datos inválidos", ubicacion: parte, detalles: /* ... */ });
+      }
+
+      if (parte === "body") req.body = resultado.data;
+      if (parte === "query") res.locals.query = resultado.data;
+    }
+    next();
+  };
+}
+```
+
+- Reemplaza a `validarParams`, `validarQuery` y `validarBody` (que eran casi idénticos) → **DRY** (*Don't Repeat Yourself*).
+- Recibe un objeto con los schemas que hagan falta: `validar({ params: ..., body: ... })`.
+- **`as const`** → TypeScript toma el array como los valores exactos `"params" | "query" | "body"`, así `schemas[parte]` y `req[parte]` quedan bien tipados.
+- **`continue`** → salta a la siguiente vuelta del `for` si esa parte no tiene schema.
+- **`ubicacion`** en la respuesta → indica si el error estuvo en `params`, `query` o `body`.
+
+### 6) Controller
+
+```ts
+export const profesionalesController = {
+  listar(req: Request, res: Response) {
+    const { especialidad } = res.locals.query as ListarProfesionalesQuery;
+    res.json(profesionalesService.listar({ especialidad }));
+  },
+
+  obtener(req: Request<IdParams>, res: Response) {
+    res.json(profesionalesService.obtener(req.params.id));
+  },
+  // crear, actualizar, eliminar...
+};
+```
+
+- Métodos **cortos**: toman datos de `req`, llaman al service y responden. Nada de lógica de negocio.
+- **`res.json(...)`** sin `.status()` → usa `200` por defecto.
+- **`Request<IdParams>`** → tipa `req.params`, así TypeScript sabe que `req.params.id` es un `string`.
+- Se agrupan en un **objeto** (`profesionalesController.listar`, `.obtener`, ...) en vez de funciones sueltas.
+
+### 7) Service: reglas de negocio + errores
+
+```ts
+export const profesionalesService = {
+  obtener(id: string) {
+    const profesional = profesionalesRepository.buscarPorId(id);
+    if (!profesional) throw new NotFoundError("Profesional");
+    return profesional;
+  },
+  // ...
+};
+```
+
+- **No sabe nada de HTTP**: no usa `req` ni `res`. Si algo sale mal, **lanza un error** (`throw`).
+- Ya no hace falta repetir `if (...) return res.status(404)...` en cada endpoint.
+- **Express 5** atrapa automáticamente los errores lanzados en los handlers y los manda al **manejador de errores**.
+
+### 8) Repository: acceso a datos
+
+```ts
+const profesionales: Profesional[] = [
+  { id: "11111111-1111-4111-8111-111111111111", nombre: "Laura Gómez", ... },
+  { id: "22222222-2222-4222-8222-222222222222", nombre: "Martín Ruiz", ... },
+];
+
+export const profesionalesRepository = {
+  listar(filtro: { especialidad?: string } = {}) {
+    if (!filtro.especialidad) return profesionales;
+    return profesionales.filter((p) => p.especialidad === filtro.especialidad);
+  },
+  buscarPorId(id: string) { ... },       // → Profesional | undefined
+  crear(datos: ProfesionalInput) { ... },
+  actualizar(id, datos) { ... },         // → Profesional | undefined
+  eliminar(id: string) { ... },          // → true | false
+};
+```
+
+- Es el **único** lugar que toca el array. El resto de la app no sabe dónde se guardan los datos.
+- Devuelve `undefined` / `false` cuando no encuentra algo, y el **service** decide qué hacer con eso.
+- **IDs fijos** en los datos de ejemplo → ya no cambian con cada reinicio, así se pueden dejar escritos en `requests.http`.
+- **`= {}`** → valor por defecto del parámetro si no se pasa nada.
+
+### 9) Errores personalizados (`AppError`)
+
+```ts
+export class AppError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+    this.name = "AppError";
+  }
+}
+
+export class NotFoundError extends AppError {
+  constructor(recurso: string) {
+    super(404, `${recurso} no encontrado`);
+  }
+}
+```
+
+- **`class ... extends Error`** → crea un tipo de error propio que además guarda el **código HTTP**.
+- **`super(...)`** → llama al constructor de la clase padre.
+- **`readonly`** → la propiedad no se puede modificar después de crearla.
+- **`NotFoundError`** es un `AppError` con `404` ya fijo: `new NotFoundError("Profesional")` → `"Profesional no encontrado"`.
+
+### 10) Manejador de errores mejorado
+
+```ts
+export const manejadorDeErrores: ErrorRequestHandler = (err, req, res, next) => {
+  if (err instanceof AppError) {
+    return res.status(err.status).json({ error: err.message });
+  }
+
+  if (err.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "El body no es un JSON válido" });
+  }
+
+  console.error(err);
+  res.status(500).json({ error: "Error interno del servidor" });
+};
+```
+
+- **`instanceof`** → chequea si el error es de nuestra clase (o de una hija, como `NotFoundError`); si lo es, usa su `status` y `message`.
+- **`entity.parse.failed`** → el error que tira `express.json()` cuando el body es un JSON mal escrito → ahora responde `400` en vez de `500`.
+- Cualquier otro error es **inesperado** → se loguea y se responde `500` sin mostrar detalles al cliente.
+
+> **💡 Dato extra:** para agregar un recurso nuevo (ej: turnos) alcanza con copiar la carpeta `modules/profesionales` como `modules/turnos`, adaptar cada capa y montar su router en `app.ts`.
 
 ---
 
