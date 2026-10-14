@@ -1,7 +1,7 @@
+DROP TABLE IF EXISTS horarios_disponibles;
 DROP TABLE IF EXISTS turnos;
 DROP TABLE IF EXISTS clientes;
 DROP TABLE IF EXISTS profesionales;
-DROP TABLE IF EXISTS horarios_disponibles;
 
 CREATE TABLE profesionales (
   id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
