@@ -6,8 +6,10 @@ Apuntes personales del proceso de aprendizaje de **Node.js**, **Express** y **Ty
 
 ```
 turnero/
-├── api/    → backend (Node.js + Express + TypeScript) — ver estructura en la Lección 4
-└── web/    → frontend
+├── api/          → backend (Node.js + Express + TypeScript) — ver estructura en la Lección 4
+│   └── sql/      → scripts de la base de datos (Lección 5)
+├── web/          → frontend
+└── compose.yaml  → define la base PostgreSQL en Docker
 ```
 
 ## 📚 Índice
@@ -18,6 +20,7 @@ turnero/
 | 2 | [Rutas y CRUD en memoria](#-lección-2--rutas-y-crud-en-memoria) | CRUD de profesionales con `GET`, `POST`, `PUT` y `DELETE` sobre un array en memoria |
 | 3 | [Middlewares y validación con Zod](#-lección-3--middlewares-y-validación-con-zod) | Middlewares propios (logger, validación de body/params/query, errores) y validación de datos con Zod |
 | 4 | [Arquitectura en capas](#-lección-4--arquitectura-en-capas) | Separar el código en módulos y capas: routes, controller, service, repository; errores personalizados |
+| 5 | [Docker y PostgreSQL](#-lección-5--docker-y-postgresql) | Base de datos en un contenedor, psql, tablas con claves, consultas SQL (`JOIN`, `UPDATE`, `DELETE`) y reglas en la base |
 
 ---
 
@@ -917,6 +920,244 @@ GET {{baseUrl}}/profesionales/{{crear.response.body.id}}
 - **`"   "` falla** porque `.trim()` se aplica **antes** que `.min(2)`: queda `""`, que tiene largo 0.
 
 > **💡 Dato extra:** para agregar un recurso nuevo (ej: turnos) alcanza con copiar la carpeta `modules/profesionales` como `modules/turnos`, adaptar cada capa y montar su router en `app.ts`.
+
+---
+
+## 🐘 Lección 5 · Docker y PostgreSQL
+
+Hasta ahora los datos vivían en un array y se perdían en cada reinicio. El siguiente paso es una **base de datos real**: **PostgreSQL**, corriendo dentro de **Docker** para no tener que instalarla en la máquina.
+
+### 1) Imagen, contenedor y volumen
+
+| Concepto | Qué es | Analogía | En el turnero |
+|----------|--------|----------|---------------|
+| **Imagen** | Plantilla de solo lectura con todo lo necesario para correr un programa (sistema base + programa + configuración) | La **receta** | `postgres:17` |
+| **Contenedor** | Una imagen **en ejecución**: un proceso aislado creado a partir de la imagen. Se puede crear, frenar y borrar | El **plato** hecho con la receta | `turnero-db` |
+| **Volumen** | Carpeta que Docker guarda **fuera** del contenedor, para que los datos **sobrevivan** aunque el contenedor se borre | El **freezer**: el plato se tira, lo guardado queda | `turnero-db-data` |
+
+- De una misma imagen se pueden crear muchos contenedores.
+- Sin volumen, al borrar el contenedor **se pierde la base completa**.
+
+### 2) `compose.yaml`
+
+```yaml
+services:
+  db:
+    image: postgres:17
+    container_name: turnero-db
+    environment:
+      POSTGRES_USER: turnero
+      POSTGRES_PASSWORD: turnero
+      POSTGRES_DB: turnero
+      TZ: America/Argentina/Buenos_Aires
+      PGTZ: America/Argentina/Buenos_Aires
+    ports:
+      - "5432:5432"
+    volumes:
+      - turnero-db-data:/var/lib/postgresql/data
+
+volumes:
+  turnero-db-data:
+```
+
+- **`services`** → los contenedores del proyecto (por ahora solo `db`).
+- **`image`** → qué imagen usar; si no está descargada, Docker la baja sola.
+- **`environment`** → variables que la imagen de Postgres usa para crear el usuario, la contraseña y la base al arrancar por primera vez. `TZ`/`PGTZ` fijan la zona horaria.
+- **`ports: "5432:5432"`** → `puerto_de_mi_máquina:puerto_del_contenedor`. Permite conectarse desde afuera en `localhost:5432`.
+- **`volumes`** → monta el volumen en la carpeta donde Postgres guarda sus datos.
+
+> ⚠️ Estas credenciales son solo para desarrollo local. En producción irían en variables de entorno (`.env`), nunca escritas en el repo.
+
+### 3) Comandos de Docker
+
+| Comando | Qué hace |
+|---------|----------|
+| `docker compose up -d` | Crea y arranca los contenedores de `compose.yaml`. **`-d`** (*detached*) = en segundo plano, devuelve la terminal |
+| `docker compose ps` | Lista los contenedores del proyecto y su estado (`Up`, `Exited`...) |
+| `docker compose logs db` | Muestra lo que imprimió el contenedor; con **`-f`** queda siguiendo los logs en vivo (salir con `Ctrl+C`) |
+| `docker compose stop` | **Frena** los contenedores sin borrarlos; `up -d` los vuelve a arrancar igual que estaban |
+| `docker compose down` | Frena **y borra** los contenedores (el volumen, y por lo tanto los datos, se conservan) |
+| `docker compose down -v` | Igual que `down` pero **también borra los volúmenes** → ⚠️ **se pierde toda la base**. Útil para empezar de cero |
+
+### 4) psql: la consola de Postgres
+
+Para entrar a la base que está dentro del contenedor:
+
+```bash
+docker exec -it turnero-db psql -U turnero -d turnero
+```
+
+- **`docker exec -it`** → ejecuta un comando dentro de un contenedor que ya está corriendo, de forma interactiva.
+- **`-U`** → usuario, **`-d`** → base de datos.
+
+| Comando | Qué hace |
+|---------|----------|
+| `\dt` | Lista las tablas (*describe tables*) |
+| `\d turnos` | Describe una tabla: columnas, tipos, claves, restricciones |
+| `\q` | Sale de psql |
+
+- Los comandos con `\` son **de psql**, no SQL: no llevan `;`.
+- Las sentencias SQL (`SELECT`, `INSERT`...) **sí** terminan en `;`. Si te olvidás, psql espera (el prompt cambia de `turnero=#` a `turnero-#`).
+
+Para ejecutar un archivo `.sql` entero sin entrar a la consola:
+
+```bash
+docker exec -i turnero-db psql -U turnero -d turnero < api/sql/01_esquema.sql
+docker exec -i turnero-db psql -U turnero -d turnero < api/sql/02_datos.sql
+```
+
+### 5) Las tablas (`api/sql/01_esquema.sql`)
+
+```sql
+CREATE TABLE profesionales (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  nombre       text NOT NULL,
+  especialidad text NOT NULL,
+  email        text NOT NULL UNIQUE,
+  creado_en    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE turnos (
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  profesional_id uuid NOT NULL REFERENCES profesionales(id) ON DELETE NO ACTION,
+  cliente_id     uuid NOT NULL REFERENCES clientes(id) ON DELETE NO ACTION,
+  inicio         timestamptz NOT NULL,
+  fin            timestamptz NOT NULL,
+  estado         text NOT NULL DEFAULT 'confirmado'
+                 CHECK (estado IN ('confirmado', 'cancelado', 'completado')),
+  creado_en      timestamptz NOT NULL DEFAULT now(),
+  CHECK (fin > inicio)
+);
+```
+
+| Elemento | Qué hace |
+|----------|----------|
+| `uuid`, `text`, `timestamptz`, `time`, `smallint` | Tipos de dato. `timestamptz` = fecha y hora **con zona horaria** |
+| `NOT NULL` | La columna es obligatoria |
+| `DEFAULT ...` | Valor si no se manda: `gen_random_uuid()` genera el id, `now()` la fecha actual |
+| `UNIQUE` | No puede haber dos filas con el mismo valor (ej: email) |
+| `CHECK (...)` | Condición que toda fila tiene que cumplir |
+| `DROP TABLE IF EXISTS` | Borra la tabla si existe, para poder correr el script varias veces |
+
+- Las tablas son **`profesionales`**, **`clientes`**, **`turnos`** y **`horarios_disponibles`** (qué días y en qué franja atiende cada profesional; `dia_semana` va de `0` a `6`).
+- **Orden de los `DROP`:** primero se borran las tablas que **apuntan** a otras (`turnos`, `horarios_disponibles`) y al final las apuntadas (`profesionales`, `clientes`). Si no, Postgres no deja borrar: `cannot drop table profesionales because other objects depend on it`.
+
+### 6) Clave primaria y clave foránea
+
+- **Clave primaria (`PRIMARY KEY`)** → la columna que **identifica de forma única** cada fila. No se puede repetir ni ser `NULL`. Es como el DNI de la fila. En todas las tablas es `id`.
+- **Clave foránea (`REFERENCES`)** → una columna que **apunta a la clave primaria de otra tabla**. Es la forma de relacionar tablas.
+  - `turnos.profesional_id REFERENCES profesionales(id)` → cada turno pertenece a un profesional que **tiene que existir**.
+  - La base no deja crear un turno para un profesional inexistente ni borrar un profesional que tiene turnos.
+
+```
+profesionales (id) ◄──── turnos (profesional_id)
+clientes      (id) ◄──── turnos (cliente_id)
+profesionales (id) ◄──── horarios_disponibles (profesional_id)
+```
+
+**¿Qué pasa al borrar la fila apuntada?** (`ON DELETE`)
+
+| Opción | Comportamiento | Dónde lo usamos |
+|--------|----------------|-----------------|
+| `NO ACTION` / `RESTRICT` | **Impide** el borrado si hay filas que la referencian | `turnos`: no se puede borrar un profesional o cliente con turnos (se pierde el historial) |
+| `CASCADE` | Borra **también** las filas que la referencian | `horarios_disponibles`: si se borra el profesional, sus horarios ya no sirven |
+
+### 7) Consultas (`api/sql/consultas.sql`)
+
+```sql
+-- Algunas columnas, filtradas y ordenadas
+SELECT nombre, email FROM profesionales
+WHERE especialidad = 'Kinesiología'
+ORDER BY nombre;
+
+-- Turnos de mañana
+SELECT * FROM turnos
+WHERE inicio >= date_trunc('day', now()) + interval '1 day'
+  AND inicio <  date_trunc('day', now()) + interval '2 days'
+ORDER BY inicio;
+```
+
+- **`SELECT columnas FROM tabla`** → qué traer (`*` = todas).
+- **`WHERE`** → filtra filas. **`ORDER BY`** → ordena.
+- **`date_trunc('day', now())`** → hoy a las 00:00. **`interval '1 day'`** → una duración que se suma o resta a una fecha.
+- **Alias** → `FROM turnos t` permite escribir `t.inicio`; `p.nombre AS profesional` renombra la columna en el resultado.
+
+### 8) `JOIN` vs `LEFT JOIN`
+
+```sql
+-- JOIN: cada turno con el nombre del profesional y del cliente
+SELECT t.inicio, t.estado, p.nombre AS profesional, c.nombre AS cliente
+FROM turnos t
+JOIN profesionales p ON p.id = t.profesional_id
+JOIN clientes c ON c.id = t.cliente_id
+ORDER BY t.inicio;
+
+-- LEFT JOIN: profesionales SIN turnos
+SELECT p.nombre, COUNT(t.id) AS cantidad
+FROM profesionales p
+LEFT JOIN turnos t ON p.id = t.profesional_id
+GROUP BY p.id
+HAVING COUNT(t.id) = 0;
+```
+
+| | `JOIN` (`INNER JOIN`) | `LEFT JOIN` |
+|-|------------------------|-------------|
+| Devuelve | Solo las filas que **tienen pareja en las dos tablas** | **Todas** las filas de la tabla de la izquierda, tengan pareja o no |
+| Si no hay pareja | La fila **desaparece** del resultado | Las columnas de la derecha vienen en **`NULL`** |
+| Ejemplo | Sofía (sin turnos) **no aparece** | Sofía **aparece** con `cantidad = 0` |
+
+- **"Izquierda"** = la tabla del `FROM`; **"derecha"** = la del `LEFT JOIN`.
+- **`GROUP BY`** → junta las filas por un valor para calcular algo por grupo (**`COUNT`**, `SUM`, `AVG`...).
+- **`HAVING`** → como `WHERE`, pero filtra **grupos**, después de agrupar.
+- **`COUNT(t.id)`** vs **`COUNT(*)`** → `COUNT(t.id)` no cuenta los `NULL`, por eso da `0` para quien no tiene turnos; `COUNT(*)` daría `1`.
+
+### 9) `UPDATE` y `DELETE`: la regla del `WHERE`
+
+```sql
+UPDATE profesionales SET especialidad = 'Kinesiología Deportiva'
+WHERE email = 'laura@turnero.com';
+
+DELETE FROM clientes WHERE email = 'no-existe@mail.com';
+```
+
+> ⚠️ **Regla de oro:** un `UPDATE` o `DELETE` **sin `WHERE`** afecta a **todas las filas** de la tabla. `DELETE FROM clientes;` borra todos los clientes, sin preguntar y sin deshacer.
+
+Hábitos para no romper nada:
+
+1. **Primero el `SELECT`** con el mismo `WHERE`, para ver qué filas se van a tocar. Recién después cambiarlo por `UPDATE`/`DELETE`.
+2. **Filtrar por algo único** (`id` o `email`), no por algo que se puede repetir como `nombre`.
+3. **Mirar la respuesta**: psql dice cuántas filas tocó (`UPDATE 1`, `DELETE 0`). Si el número no es el esperado, algo anda mal.
+4. Para cambios delicados: **`BEGIN;`** → cambio → revisar → **`COMMIT;`** para confirmar o **`ROLLBACK;`** para deshacer.
+
+### 10) Probar las reglas (`api/sql/consultas_invalidas.sql`)
+
+Cada sentencia de este archivo **tiene que fallar**. Si alguna pasa, falta una regla en la base.
+
+| Intento | Regla que lo frena | Error de Postgres |
+|---------|--------------------|-------------------|
+| Profesional con email repetido | `UNIQUE` | `duplicate key value violates unique constraint "profesionales_email_key"` |
+| Turno para un profesional inexistente | `REFERENCES` | `violates foreign key constraint "turnos_profesional_id_fkey"` |
+| Turno que termina antes de empezar | `CHECK (fin > inicio)` | `violates check constraint "turnos_check"` |
+| Estado `'perdido'` | `CHECK (estado IN (...))` | `violates check constraint "turnos_estado_check"` |
+| Borrar un profesional con turnos | `ON DELETE NO ACTION` | `update or delete on table "profesionales" violates foreign key constraint ... is still referenced from table "turnos"` |
+
+### 11) ¿Por qué las reglas viven en el servicio **y** en la base?
+
+Parece repetido: Zod ya valida el email y el service ya devuelve `404`. Pero cada lugar cumple un rol distinto:
+
+| | Service / Zod | Base de datos |
+|-|---------------|---------------|
+| **Para qué** | Dar una **buena respuesta** al cliente: `400`/`404`/`409` con un mensaje claro | Ser la **última garantía**: los datos nunca quedan inválidos |
+| **Cuándo actúa** | Antes de llegar a la base (rápido, sin consultas de más) | Siempre, venga el dato de donde venga |
+| **Puede saltearse?** | Sí: un script, alguien en psql, otro servicio, un bug | **No**: todo dato que entra pasa por las restricciones |
+
+- **Solo en el service** → alguien que se conecta directo a la base (o un bug) puede guardar datos rotos.
+- **Solo en la base** → funciona, pero el usuario recibe un `500` con un mensaje técnico en vez de un `400` claro.
+- **Concurrencia:** dos peticiones al mismo tiempo pueden pasar las dos el chequeo del service ("¿existe este email? no") y querer guardar el mismo email. Solo el `UNIQUE` de la base lo frena de verdad.
+
+> 🍽️ Siguiendo la analogía del restaurante: el **cocinero** revisa que el pescado esté fresco antes de cocinarlo, pero la **heladera** igual tiene que mantenerlo frío. Si el cocinero se distrae una vez, la heladera sigue cuidando la comida.
+
+> **💡 Dato extra:** con `docker compose down -v` + `up -d` + los dos scripts (`01_esquema.sql` y `02_datos.sql`) se vuelve a tener una base limpia con los datos de prueba en segundos.
 
 ---
 
