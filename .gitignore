@@ -39,3 +39,10 @@ Thumbs.db
 
 # Claude Code (configuración local personal)
 .claude/settings.local.json
+
+api/src/generated
+
+# Skills de agentes instaladas (se restauran desde api/skills-lock.json)
+api/.agents/
+api/.claude/skills/
+api/.windsurf/

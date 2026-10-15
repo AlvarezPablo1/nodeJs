@@ -4,13 +4,12 @@ import { profesionalesRepository } from "./profesionales.repository.js";
 import type { ProfesionalInput } from "./profesionales.schema.js";
 
 export const profesionalesService = {
-
   listar(filtro: { especialidad?: string }) {
     return profesionalesRepository.listar(filtro);
   },
 
-  obtener(id: string) {
-    const profesional = profesionalesRepository.buscarPorId(id);
+  async obtener(id: string) {
+    const profesional = await profesionalesRepository.buscarPorId(id);
     if (!profesional) throw new NotFoundError("Profesional");
     return profesional;
   },
@@ -19,14 +18,14 @@ export const profesionalesService = {
     return profesionalesRepository.crear(datos);
   },
 
-  actualizar(id: string, datos: ProfesionalInput) {
-    const actualizado = profesionalesRepository.actualizar(id, datos);
+  async actualizar(id: string, datos: ProfesionalInput) {
+    const actualizado = await profesionalesRepository.actualizar(id, datos);
     if (!actualizado) throw new NotFoundError("Profesional");
     return actualizado;
   },
 
-  eliminar(id: string) {
-    const eliminado = profesionalesRepository.eliminar(id);
+  async eliminar(id: string) {
+    const eliminado = await profesionalesRepository.eliminar(id);
     if (!eliminado) throw new NotFoundError("Profesional");
   },
 };

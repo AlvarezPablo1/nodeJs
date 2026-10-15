@@ -1164,3 +1164,4 @@ Parece repetido: Zod ya valida el email y el service ya devuelve `404`. Pero cad
 ## 🤖 Comandos de Claude Code
 
 - `/commit-and-push [mensaje]`: revisa los cambios, crea el commit y hace push a la rama actual.
+- `/setup-db`: configura desde cero PostgreSQL (Docker) + Prisma 7 en un proyecto Node/TypeScript: pregunta nombre de la base, usuario, contraseña, contenedor y puerto, y arma `compose.yaml`, `.env`, cliente, seed, scripts y la primera migración.

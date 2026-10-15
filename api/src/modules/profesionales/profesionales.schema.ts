@@ -14,5 +14,4 @@ export const listarProfesionalesQuerySchema = z.object({
 
 // Tipos derivados de los esquemas
 export type ProfesionalInput = z.infer<typeof profesionalSchema>;
-export type Profesional = ProfesionalInput & { id: string };
 export type ListarProfesionalesQuery = z.infer<typeof listarProfesionalesQuerySchema>;

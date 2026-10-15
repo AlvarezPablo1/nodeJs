@@ -1,46 +1,43 @@
-import { randomUUID } from "node:crypto";
-import { Profesional, ProfesionalInput } from "./profesionales.schema.js";
+import { prisma } from "../../lib/prisma.js";
+import { Prisma } from "../../generated/prisma/client.js";
+import type { ProfesionalInput } from "./profesionales.schema.js";
 
-// Array que simula una base de datos en memoria para almacenar profesionales.
-const profesionales: Profesional[] = [
-  { id: "11111111-1111-4111-8111-111111111111", nombre: "Laura Gómez", especialidad: "Kinesiología", email: "laura@turnero.com" },
-  { id: "22222222-2222-4222-8222-222222222222", nombre: "Martín Ruiz", especialidad: "Nutrición", email: "martin@turnero.com" },
-];
+function esNoEncontrado(error: unknown) {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025";
+}
 
 export const profesionalesRepository = {
-  // Función para listar profesionales, con un filtro opcional por especialidad.
   listar(filtro: { especialidad?: string } = {}) {
-    if (!filtro.especialidad) return profesionales;
-    return profesionales.filter((p) => p.especialidad === filtro.especialidad);
+    return prisma.profesional.findMany({
+      where: { especialidad: filtro.especialidad },
+      orderBy: { nombre: "asc" },
+    });
   },
 
-  // Función para buscar un profesional por su ID.
   buscarPorId(id: string) {
-    return profesionales.find((p) => p.id === id);
+    return prisma.profesional.findUnique({ where: { id } });
   },
 
-  // Función para crear un nuevo profesional a partir de los datos proporcionados.
   crear(datos: ProfesionalInput) {
-    const nuevo: Profesional = { id: randomUUID(), ...datos };
-    profesionales.push(nuevo);
-    return nuevo;
+    return prisma.profesional.create({ data: datos });
   },
 
-  // Función para actualizar los datos de un profesional existente por su ID.
-  actualizar(id: string, datos: ProfesionalInput) {
-    const indice = profesionales.findIndex((p) => p.id === id);
-    if (indice === -1) return undefined;
-
-    profesionales[indice] = { id, ...datos };
-    return profesionales[indice];
+  async actualizar(id: string, datos: ProfesionalInput) {
+    try {
+      return await prisma.profesional.update({ where: { id }, data: datos });
+    } catch (error) {
+      if (esNoEncontrado(error)) return null;
+      throw error;
+    }
   },
 
-  // Función para eliminar un profesional por su ID.
-  eliminar(id: string) {
-    const indice = profesionales.findIndex((p) => p.id === id);
-    if (indice === -1) return false;
-
-    profesionales.splice(indice, 1);
-    return true;
+  async eliminar(id: string) {
+    try {
+      await prisma.profesional.delete({ where: { id } });
+      return true;
+    } catch (error) {
+      if (esNoEncontrado(error)) return false;
+      throw error;
+    }
   },
 };

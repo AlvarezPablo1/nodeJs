@@ -1,0 +1,69 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  importFileExtension = "js"
+  moduleFormat        = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Profesional {
+  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre       String
+  especialidad String
+  email        String              @unique
+  creadoEn     DateTime            @default(now()) @map("creado_en") @db.Timestamptz(6)
+  turnos       Turno[]
+  horarios     HorarioDisponible[]
+
+  @@map("profesionales")
+}
+
+model Cliente {
+  id       String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre   String
+  email    String   @unique
+  telefono String?
+  creadoEn DateTime @default(now()) @map("creado_en") @db.Timestamptz(6)
+  turnos   Turno[]
+
+  @@map("clientes")
+}
+
+enum EstadoTurno {
+  confirmado
+  cancelado
+  completado
+
+  @@map("estado_turno")
+}
+
+model Turno {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  profesionalId String      @map("profesional_id") @db.Uuid
+  clienteId     String      @map("cliente_id") @db.Uuid
+  inicio        DateTime    @db.Timestamptz(6)
+  fin           DateTime    @db.Timestamptz(6)
+  estado        EstadoTurno @default(confirmado)
+  creadoEn      DateTime    @default(now()) @map("creado_en") @db.Timestamptz(6)
+
+  profesional Profesional @relation(fields: [profesionalId], references: [id], onDelete: NoAction)
+  cliente     Cliente     @relation(fields: [clienteId], references: [id], onDelete: NoAction)
+
+  @@map("turnos")
+}
+
+model HorarioDisponible {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  profesionalId String   @map("profesional_id") @db.Uuid
+  diaSemana     Int      @map("dia_semana") @db.SmallInt
+  inicio        DateTime @db.Time(6)
+  fin           DateTime @db.Time(6)
+
+  profesional Profesional @relation(fields: [profesionalId], references: [id], onDelete: Cascade)
+
+  @@unique([profesionalId, diaSemana, inicio])
+  @@map("horarios_disponibles")
+}

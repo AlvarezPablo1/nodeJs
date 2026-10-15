@@ -33,7 +33,7 @@ CREATE TABLE turnos (
 
 CREATE TABLE horarios_disponibles (
   id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  profesional_id uuid NOT NULL REFERENCES profesionales(id) ON DELETE NO ACTION,
+  profesional_id uuid NOT NULL REFERENCES profesionales(id) ON DELETE CASCADE,
   dia_semana     smallint NOT NULL CHECK (dia_semana BETWEEN 0 AND 6),
   inicio         time NOT NULL,
   fin            time NOT NULL,
