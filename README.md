@@ -7,7 +7,8 @@ Apuntes personales del proceso de aprendizaje de **Node.js**, **Express** y **Ty
 ```
 turnero/
 ├── api/          → backend (Node.js + Express + TypeScript) — ver estructura en la Lección 4
-│   └── sql/      → scripts de la base de datos (Lección 5)
+│   ├── sql/      → scripts SQL a mano (Lección 5)
+│   └── prisma/   → schema, migraciones y seed de Prisma (Lección 6)
 ├── web/          → frontend
 └── compose.yaml  → define la base PostgreSQL en Docker
 ```
@@ -21,6 +22,7 @@ turnero/
 | 3 | [Middlewares y validación con Zod](#-lección-3--middlewares-y-validación-con-zod) | Middlewares propios (logger, validación de body/params/query, errores) y validación de datos con Zod |
 | 4 | [Arquitectura en capas](#-lección-4--arquitectura-en-capas) | Separar el código en módulos y capas: routes, controller, service, repository; errores personalizados |
 | 5 | [Docker y PostgreSQL](#-lección-5--docker-y-postgresql) | Base de datos en un contenedor, psql, tablas con claves, consultas SQL (`JOIN`, `UPDATE`, `DELETE`) y reglas en la base |
+| 6 | [Prisma ORM](#-lección-6--prisma-orm) | Conectar la API a PostgreSQL con Prisma 7: schema, migraciones, cliente, seed y repository asíncrono |
 
 ---
 
@@ -1158,6 +1160,271 @@ Parece repetido: Zod ya valida el email y el service ya devuelve `404`. Pero cad
 > 🍽️ Siguiendo la analogía del restaurante: el **cocinero** revisa que el pescado esté fresco antes de cocinarlo, pero la **heladera** igual tiene que mantenerlo frío. Si el cocinero se distrae una vez, la heladera sigue cuidando la comida.
 
 > **💡 Dato extra:** con `docker compose down -v` + `up -d` + los dos scripts (`01_esquema.sql` y `02_datos.sql`) se vuelve a tener una base limpia con los datos de prueba en segundos.
+
+---
+
+## 🔷 Lección 6 · Prisma ORM
+
+En la Lección 5 escribimos SQL a mano. Ahora la API deja el array en memoria y guarda los profesionales en **PostgreSQL** usando **Prisma**, sin escribir SQL en el código.
+
+### 1) ¿Qué es un ORM?
+
+Un **ORM** (*Object-Relational Mapping*) traduce entre **objetos de TypeScript** y **filas de la base**:
+
+```ts
+// Sin ORM: SQL a mano, el resultado no tiene tipos
+await pool.query("SELECT * FROM profesionales WHERE especialidad = $1", ["Nutrición"]);
+
+// Con Prisma: autocompletado y tipos en todo
+await prisma.profesional.findMany({ where: { especialidad: "Nutrición" } });
+```
+
+- TypeScript sabe qué columnas existen: un typo (`especialida`) es un **error al compilar**, no en producción.
+- Prisma arma el SQL y se encarga de los parámetros (sin riesgo de *SQL injection*).
+
+### 2) Piezas nuevas
+
+```
+api/
+├── .env                      → DATABASE_URL real (NO va a Git)
+├── .env.example              → plantilla de .env (SÍ va a Git)
+├── prisma7.config.ts         → configuración de Prisma: dónde está el schema, URL, seed
+├── prisma/
+│   ├── schema.prisma         → los modelos (tablas) escritos en el lenguaje de Prisma
+│   ├── migrations/           → historial de cambios en la base, en SQL (SÍ va a Git)
+│   └── seed.ts               → carga datos de prueba
+└── src/
+    ├── lib/prisma.ts         → la única instancia del cliente de Prisma
+    └── generated/prisma/     → cliente generado por `prisma generate` (NO va a Git)
+```
+
+Dependencias:
+
+| Paquete | Tipo | Para qué |
+|---------|------|----------|
+| `prisma` | dev | La CLI: `migrate`, `generate`, `db seed`, `studio` |
+| `@prisma/client` | dependencia | Base del cliente que usa la app |
+| `@prisma/adapter-pg` + `pg` | dependencia | **Driver adapter**: en Prisma 7 el cliente se conecta a Postgres a través del driver `pg` |
+| `dotenv` | dependencia | Carga las variables de `.env` en `process.env` |
+
+### 3) Variables de entorno: `.env` y `.env.example`
+
+```bash
+# api/.env.example
+DATABASE_URL="postgresql://turnero:turnero@localhost:5432/turnero?schema=public"
+```
+
+- **`DATABASE_URL`** → `postgresql://USUARIO:CONTRASEÑA@HOST:PUERTO/BASE?schema=public`.
+- **`.env`** tiene los valores **reales** y está en el `.gitignore`: las contraseñas nunca se suben al repo.
+- **`.env.example`** es la **plantilla**: mismas claves con valores de ejemplo. Quien clone el repo hace `cp .env.example .env` y ajusta lo que necesite.
+- **`import "dotenv/config"`** → lee el `.env` y carga cada línea en `process.env`.
+
+### 4) `schema.prisma`: los modelos
+
+```prisma
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  importFileExtension = "js"
+  moduleFormat        = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Profesional {
+  id           String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nombre       String
+  especialidad String
+  email        String              @unique
+  creadoEn     DateTime            @default(now()) @map("creado_en") @db.Timestamptz(6)
+  turnos       Turno[]
+  horarios     HorarioDisponible[]
+
+  @@map("profesionales")
+}
+
+model Turno {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  profesionalId String      @map("profesional_id") @db.Uuid
+  estado        EstadoTurno @default(confirmado)
+  // ...
+  profesional Profesional @relation(fields: [profesionalId], references: [id], onDelete: NoAction)
+
+  @@map("turnos")
+}
+```
+
+| Elemento | Qué hace | Equivalente en SQL (Lección 5) |
+|----------|----------|-------------------------------|
+| `model Profesional` | Define una tabla | `CREATE TABLE` |
+| `@id` | Clave primaria | `PRIMARY KEY` |
+| `@default(...)` | Valor por defecto | `DEFAULT` |
+| `@unique` | Valor no repetible | `UNIQUE` |
+| `String?` | El `?` la hace opcional | sin `NOT NULL` |
+| `@db.Uuid`, `@db.Timestamptz(6)` | Tipo exacto en Postgres | `uuid`, `timestamptz` |
+| `@relation(fields, references)` | Clave foránea | `REFERENCES` |
+| `onDelete: NoAction` / `Cascade` | Qué pasa al borrar | `ON DELETE ...` |
+| `enum EstadoTurno` | Lista cerrada de valores | `CHECK (estado IN (...))` |
+
+- **Dos nombres:** en TypeScript se usa **camelCase** (`creadoEn`, `Profesional`); en la base, **snake_case** (`creado_en`, `profesionales`). **`@map`** traduce una columna y **`@@map`** la tabla.
+- **Campos de relación** (`turnos Turno[]`, `profesional Profesional`) → **no** son columnas: le dicen a Prisma cómo navegar entre tablas.
+- **`datasource` sin `url`** → en Prisma 7 la conexión se configura en `prisma7.config.ts`.
+- **`generator`** → dónde y cómo generar el cliente. `importFileExtension = "js"` y `moduleFormat = "esm"` lo hacen compatible con `"module": "NodeNext"`.
+
+### 5) Migraciones
+
+Una **migración** es un archivo SQL con **un cambio** a la base. Prisma las genera comparando `schema.prisma` con lo que ya se aplicó.
+
+```bash
+npx prisma migrate dev --name init   # crea prisma/migrations/<fecha>_init/migration.sql y lo aplica
+```
+
+- Quedan en Git → cualquiera recrea la misma base aplicando las migraciones en orden.
+- **Nunca se editan una vez aplicadas**: para cambiar algo se crea una migración nueva.
+- **Reglas que Prisma no sabe escribir** (como los `CHECK`): se crea la migración con **`--create-only`**, se agregan al `migration.sql` y recién después se aplica:
+
+```sql
+-- Reglas que el schema de Prisma no puede expresar
+ALTER TABLE "turnos" ADD CONSTRAINT "turnos_fin_mayor_que_inicio" CHECK ("fin" > "inicio");
+ALTER TABLE "horarios_disponibles" ADD CONSTRAINT "horarios_dia_semana_valido" CHECK ("dia_semana" BETWEEN 0 AND 6);
+```
+
+| Comando | Qué hace |
+|---------|----------|
+| `npx prisma migrate dev --name <nombre>` | Crea una migración nueva a partir del schema y la aplica |
+| `npx prisma generate` | Genera el cliente en `src/generated/prisma` (correr después de cada cambio al schema) |
+| `npx prisma db seed` | Ejecuta el seed configurado en `prisma7.config.ts` |
+| `npm run db:reset` | ⚠️ Borra la base, reaplica todas las migraciones y corre el seed |
+| `npx prisma studio` | Abre una interfaz web para ver y editar los datos |
+
+> En **Prisma 7**, `migrate dev` **no** corre `generate` ni el seed solo: hay que ejecutarlos aparte.
+
+### 6) Configuración (`prisma7.config.ts`) y cliente (`src/lib/prisma.ts`)
+
+```ts
+// prisma7.config.ts → lo usa la CLI
+export default defineConfig({
+  schema: "prisma/schema.prisma",
+  migrations: { path: "prisma/migrations", seed: "tsx prisma/seed.ts" },
+  datasource: { url: process.env["DATABASE_URL"] },
+});
+```
+
+```ts
+// src/lib/prisma.ts → lo usa la app
+import "dotenv/config";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "../generated/prisma/client.js";
+
+const connectionString = process.env.DATABASE_URL;
+if (!connectionString) {
+  throw new Error("Falta la variable de entorno DATABASE_URL");
+}
+
+const adapter = new PrismaPg({ connectionString });
+export const prisma = new PrismaClient({ adapter });
+```
+
+- **Una sola instancia** para toda la app: cada `new PrismaClient()` abre sus propias conexiones.
+- **Fallar al arrancar** si falta `DATABASE_URL` es mejor que fallar en la primera petición con un error confuso.
+
+### 7) Seed: datos de prueba
+
+```ts
+async function main() {
+  // Primero se borran las tablas que apuntan a otras
+  await prisma.turno.deleteMany();
+  await prisma.horarioDisponible.deleteMany();
+  await prisma.cliente.deleteMany();
+  await prisma.profesional.deleteMany();
+
+  await prisma.profesional.createMany({ data: [ /* ids fijos */ ] });
+  // ...
+}
+```
+
+- **Idempotente** → borra y vuelve a cargar: se puede correr las veces que haga falta y siempre deja lo mismo.
+- **Ids fijos** (`1111...`, `2222...`) → los mismos que usa `requests.http`.
+- **Columnas `time`** (`inicio`/`fin` de horarios) → en Prisma son `DateTime`, no aceptan `"09:00"`. Se pasa una fecha con esa hora **en UTC** y Postgres guarda solo la hora:
+
+```ts
+function hora(hhmm: string) {
+  return new Date(`1970-01-01T${hhmm}:00Z`); // "09:00" → 09:00:00
+}
+```
+
+### 8) El repository ahora es asíncrono
+
+```ts
+export const profesionalesRepository = {
+  listar(filtro: { especialidad?: string } = {}) {
+    return prisma.profesional.findMany({
+      where: { especialidad: filtro.especialidad },
+      orderBy: { nombre: "asc" },
+    });
+  },
+
+  buscarPorId(id: string) {
+    return prisma.profesional.findUnique({ where: { id } });
+  },
+
+  async actualizar(id: string, datos: ProfesionalInput) {
+    try {
+      return await prisma.profesional.update({ where: { id }, data: datos });
+    } catch (error) {
+      if (esNoEncontrado(error)) return null;
+      throw error;
+    }
+  },
+  // crear, eliminar...
+};
+```
+
+| Método de Prisma | Qué hace | Si no encuentra |
+|------------------|----------|-----------------|
+| `findMany({ where, orderBy })` | Lista filas filtradas y ordenadas | Devuelve `[]` |
+| `findUnique({ where: { id } })` | Busca por un campo único | Devuelve `null` |
+| `create({ data })` | Inserta y devuelve la fila creada | — |
+| `update({ where, data })` | Modifica y devuelve la fila | **Lanza error `P2025`** |
+| `delete({ where })` | Borra la fila | **Lanza error `P2025`** |
+
+- **`where: { especialidad: undefined }`** → Prisma **ignora** los filtros `undefined`, así que sin `?especialidad=` trae todos. Ya no hace falta el `if`.
+- **`P2025`** → el código de error de Prisma para "registro no encontrado". El repository lo traduce a `null`/`false` para que el service siga funcionando igual que con el array.
+- **Todo devuelve `Promise`** → hablar con la base lleva tiempo.
+
+### 9) `async` / `await` en todas las capas
+
+```ts
+// service
+async obtener(id: string) {
+  const profesional = await profesionalesRepository.buscarPorId(id);
+  if (!profesional) throw new NotFoundError("Profesional");
+  return profesional;
+}
+
+// controller
+async obtener(req: Request<IdParams>, res: Response) {
+  res.json(await profesionalesService.obtener(req.params.id));
+}
+```
+
+- Una **`Promise`** es un valor que **va a llegar más adelante**. **`await`** espera a que llegue, y solo se puede usar dentro de una función **`async`**.
+- Si una capa se vuelve asíncrona, **las de arriba también**: repository → service → controller.
+- **Sin `await`**, `profesional` sería la `Promise` (que siempre es "verdadera"): el `if (!profesional)` nunca daría `404` y para un id inexistente se respondería `200` con `null`.
+- **Express 5** atrapa los errores de funciones `async` (un `throw` o una `Promise` rechazada) y los manda al `manejadorDeErrores`, igual que en la Lección 4.
+
+> 🍽️ **Analogía:** cambiamos la **heladera** (array) por una **cámara frigorífica** (PostgreSQL). Tal como prometía la Lección 4, las rutas y la validación no cambiaron; el service y el controller solo tuvieron que aprender a **esperar** (`await`), porque ir a buscar a la cámara tarda más que abrir la heladera.
+
+> **💡 Para arrancar desde cero** después de clonar el repo:
+> ```bash
+> cp api/.env.example api/.env
+> docker compose up -d
+> cd api && npm install
+> npx prisma migrate dev && npx prisma generate && npx prisma db seed
+> npm run dev
+> ```
 
 ---
 
