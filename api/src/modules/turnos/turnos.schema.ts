@@ -9,6 +9,7 @@ export const listarTurnosQuerySchema = z.object({
     hasta: z.coerce.date().optional(),
     pagina: z.coerce.number().int().min(1).default(1),
     porPagina: z.coerce.number().int().min(1).max(50).default(10),
+    orden: z.enum(['inicio', '-inicio']).default('inicio'),
   })
   .refine((q) => !q.desde || !q.hasta || q.desde < q.hasta, {
     error: "'desde' tiene que ser anterior a 'hasta'",

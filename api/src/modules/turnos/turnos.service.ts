@@ -58,4 +58,24 @@ export const turnosService = {
 
     return { libres, atiende: horarios.length > 0 };
   },
+
+  async estadisticasDeProfesional(profesionalId: string) {
+    await profesionalesService.obtener(profesionalId);
+
+    const grupos = await turnosRepository.contarPorEstado(profesionalId);
+
+    const porEstado: Record<"confirmado" | "cancelado" | "completado", number> = {
+      confirmado: 0,
+      cancelado: 0,
+      completado: 0,
+    };
+
+    for (const grupo of grupos) {
+      porEstado[grupo.estado] = grupo._count._all;
+    }
+
+    const total = porEstado.confirmado + porEstado.cancelado + porEstado.completado;
+
+    return { total, porEstado };
+  },
 };

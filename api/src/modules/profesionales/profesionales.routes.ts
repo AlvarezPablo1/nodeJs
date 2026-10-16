@@ -9,7 +9,8 @@ export const profesionalesRouter = Router();
 // Definición de rutas para el módulo de profesionales
 profesionalesRouter.get("/", validar({ query: listarProfesionalesQuerySchema }), profesionalesController.listar);
 profesionalesRouter.get("/:id", validar({ params: idParamsSchema }), profesionalesController.obtener);
+profesionalesRouter.get("/:id/disponibilidad", validar({ params: idParamsSchema, query: disponibilidadQuerySchema }), profesionalesController.disponibilidad);
+profesionalesRouter.get("/:id/estadisticas", validar({ params: idParamsSchema }), profesionalesController.estadisticas);
 profesionalesRouter.post("/", validar({ body: profesionalSchema }), profesionalesController.crear);
 profesionalesRouter.put("/:id", validar({ params: idParamsSchema, body: profesionalSchema }), profesionalesController.actualizar);
 profesionalesRouter.delete("/:id", validar({ params: idParamsSchema }), profesionalesController.eliminar);
-profesionalesRouter.get("/:id/disponibilidad", validar({ params: idParamsSchema, query: disponibilidadQuerySchema }), profesionalesController.disponibilidad);

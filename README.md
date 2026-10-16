@@ -660,6 +660,41 @@ petición → routes → validar → controller → service → repository → d
 - **Ventaja clave:** cada capa se puede cambiar sin tocar las otras. Cuando pasemos a una base de datos real, solo cambia el **repository**.
 - Convención de nombres: **`<modulo>.<capa>.ts`** → es fácil encontrar cualquier archivo.
 
+#### 🔁 Para qué sirve cada archivo de un módulo: ida y vuelta
+
+**Ida** (la petición baja hasta la base):
+
+1. **routes** → define el **método**, la **URL** y las **validaciones de formato**: las que se pueden hacer mirando solo la petición (¿el id es un UUID?, ¿la fecha es `AAAA-MM-DD`?), usando los schemas de **schema**.
+2. **controller** → recupera todo lo que trae la petición (`params`, `query`, `body`) y llama al **service**.
+3. **service** → aplica las **validaciones de negocio**: las que necesitan datos de la base (¿existe el profesional?, ¿el horario está libre?). Para eso llama al **repository**.
+4. **repository** → recupera de la base los datos necesarios y se los devuelve al **service**.
+
+**Vuelta** (la respuesta sube hasta el cliente):
+
+5. **service** → toma los datos que trajo el repository y decide **cómo armarlos y ordenarlos** para que al frontend le llegue justo lo que necesita, sin tener que hacer mucha lógica extra del otro lado.
+6. **controller** → recibe lo que armó el service y **envía la respuesta**.
+
+```
+        IDA                                         VUELTA
+routes      → método, URL, formato           controller ← envía la respuesta
+controller  → lee la petición                service    ← arma y ordena para el front
+service     → reglas de negocio              repository ← devuelve los datos
+repository  → consulta la base  ───────────────────┘
+```
+
+**Ejemplo con la disponibilidad** (`GET /profesionales/:id/disponibilidad?fecha=...`, Lección 7):
+
+| Paso | Capa | Qué hace |
+|------|------|----------|
+| 1 | routes | `GET /:id/disponibilidad`, valida que `id` sea UUID y `fecha` tenga formato `AAAA-MM-DD` |
+| 2 | controller | Saca `id`, `fecha` y `duracion` de la petición y llama a `turnosService.calcularDisponibilidad` |
+| 3 | service | Verifica que el profesional exista (si no → `404`) |
+| 4 | repository | Trae los horarios de atención de ese día y los turnos ocupados |
+| 5 | service | Corta los horarios en bloques, descarta los ocupados y los que ya pasaron → lista de horarios libres |
+| 6 | controller | Responde con `responderOk` (o `responderNegativo` si no atiende ese día) |
+
+> El frontend recibe directamente la lista de horarios libres: no tiene que saber de horarios de atención, turnos ocupados ni cuentas con minutos.
+
 #### 🍽️ Analogía: un restaurante
 
 Pensá en un restaurante:

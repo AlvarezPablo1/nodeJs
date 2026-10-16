@@ -178,6 +178,9 @@ DELETE {{baseUrl}}/profesionales/{{idInexistente}}
 ### Listar turnos (primera página)
 GET {{baseUrl}}/turnos
 
+### Listar turnos ordenados por inicio descendente
+GET {{baseUrl}}/turnos?orden=-inicio 
+
 ### Paginación: de a 1 por página, segunda página
 GET {{baseUrl}}/turnos?porPagina=1&pagina=2
 

@@ -22,7 +22,7 @@ export const turnosRepository = {
       prisma.turno.findMany({
         where,
         include: incluirResumen,
-        orderBy: { inicio: "asc" },
+        orderBy: { inicio: filtros.orden === "-inicio" ? "desc" : "asc" },
         skip: (pagina - 1) * porPagina,
         take: porPagina,
       }),
@@ -45,4 +45,12 @@ export const turnosRepository = {
       select: { inicio: true, fin: true },
     });
   },
+
+  contarPorEstado(profesionalId: string) {
+  return prisma.turno.groupBy({
+    by: ["estado"],
+    where: { profesionalId },
+    _count: { _all: true },
+  });
+},
 };
