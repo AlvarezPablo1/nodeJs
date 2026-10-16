@@ -195,7 +195,7 @@ GET {{baseUrl}}/turnos?porPagina=1000
 ### Disponibilidad de Laura en bloques de 45 minutos
 GET {{baseUrl}}/profesionales/{{idLaura}}/disponibilidad?fecha=2026-10-16&duracion=45
 
-### Laura un domingo → data vacía, meta.atiende false
+### Laura un domingo → result false, data.atiende false y horarios vacío
 GET {{baseUrl}}/profesionales/{{idLaura}}/disponibilidad?fecha=2026-10-18
 
 ### Fecha mal formada → 400
