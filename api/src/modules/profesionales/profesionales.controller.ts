@@ -1,30 +1,46 @@
 import type { Request, Response } from "express";
-import { profesionalesService } from "./profesionales.service.js";
-import type { ListarProfesionalesQuery } from "./profesionales.schema.js";
+import { responderNegativo, responderOk } from "../../shared/respuesta.js";
 import type { IdParams } from "../../shared/schemas.js";
+import { profesionalesService } from "./profesionales.service.js";
+import type { DisponibilidadQuery, ListarProfesionalesQuery } from "./profesionales.schema.js";
+import { turnosService } from "../turnos/turnos.service.js";
 
-
-// Controlador que maneja las solicitudes HTTP relacionadas con los profesionales.
 export const profesionalesController = {
   async listar(req: Request, res: Response) {
     const { especialidad } = res.locals.query as ListarProfesionalesQuery;
-    res.json(await profesionalesService.listar({ especialidad }));
+    responderOk(res, await profesionalesService.listar({ especialidad }));
   },
 
   async obtener(req: Request<IdParams>, res: Response) {
-    res.json(await profesionalesService.obtener(req.params.id));
+    responderOk(res, await profesionalesService.obtener(req.params.id));
   },
 
   async crear(req: Request, res: Response) {
-    res.status(201).json(await profesionalesService.crear(req.body));
+    responderOk(res, await profesionalesService.crear(req.body), { status: 201 });
   },
 
   async actualizar(req: Request<IdParams>, res: Response) {
-    res.json(await profesionalesService.actualizar(req.params.id, req.body));
+    responderOk(res, await profesionalesService.actualizar(req.params.id, req.body));
   },
 
   async eliminar(req: Request<IdParams>, res: Response) {
     await profesionalesService.eliminar(req.params.id);
-    res.status(204).send();
+    responderOk(res, null);
   },
+
+  async disponibilidad(req: Request<IdParams>, res: Response) {
+  const { fecha, duracion } = res.locals.query as DisponibilidadQuery;
+  const { libres, atiende } = await turnosService.calcularDisponibilidad(req.params.id, fecha, duracion);
+
+  if (!atiende) {
+    return responderNegativo(res, "El profesional no atiende ese día", { atiende: false, horarios: [] }, {
+      meta: { fecha, duracion },
+    });
+  }
+
+  responderOk(res, { atiende: true, horarios: libres }, {
+    meta: { fecha, duracion, cantidad: libres.length },
+  });
+},
+
 };

@@ -51,7 +51,8 @@ model Turno {
 
   profesional Profesional @relation(fields: [profesionalId], references: [id], onDelete: NoAction)
   cliente     Cliente     @relation(fields: [clienteId], references: [id], onDelete: NoAction)
-
+  
+  @@index([profesionalId, inicio])
   @@map("turnos")
 }
 

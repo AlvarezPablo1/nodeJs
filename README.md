@@ -7,7 +7,7 @@ Apuntes personales del proceso de aprendizaje de **Node.js**, **Express** y **Ty
 ```
 turnero/
 ├── api/          → backend (Node.js + Express + TypeScript) — ver estructura en la Lección 4
-│   ├── sql/      → scripts SQL a mano (Lección 5)
+│   ├── sql/      → consultas SQL de práctica (Lección 5)
 │   └── prisma/   → schema, migraciones y seed de Prisma (Lección 6)
 ├── web/          → frontend
 └── compose.yaml  → define la base PostgreSQL en Docker
@@ -23,6 +23,7 @@ turnero/
 | 4 | [Arquitectura en capas](#-lección-4--arquitectura-en-capas) | Separar el código en módulos y capas: routes, controller, service, repository; errores personalizados |
 | 5 | [Docker y PostgreSQL](#-lección-5--docker-y-postgresql) | Base de datos en un contenedor, psql, tablas con claves, consultas SQL (`JOIN`, `UPDATE`, `DELETE`) y reglas en la base |
 | 6 | [Prisma ORM](#-lección-6--prisma-orm) | Conectar la API a PostgreSQL con Prisma 7: schema, migraciones, cliente, seed y repository asíncrono |
+| 7 | [Turnos, disponibilidad y respuestas uniformes](#-lección-7--turnos-disponibilidad-y-respuestas-uniformes) | Formato único de respuesta, códigos de error, `409` por email repetido, relaciones con `include`, paginación, índices y cálculo de horarios libres |
 
 ---
 
@@ -1004,9 +1005,10 @@ docker exec -it turnero-db psql -U turnero -d turnero
 Para ejecutar un archivo `.sql` entero sin entrar a la consola:
 
 ```bash
-docker exec -i turnero-db psql -U turnero -d turnero < api/sql/01_esquema.sql
-docker exec -i turnero-db psql -U turnero -d turnero < api/sql/02_datos.sql
+docker exec -i turnero-db psql -U turnero -d turnero < api/sql/consultas.sql
 ```
+
+> ⚠️ En esta lección las tablas y los datos se creaban con `api/sql/01_esquema.sql` y `api/sql/02_datos.sql`. Desde la **Lección 6** esos scripts se borraron: las tablas las crean las **migraciones de Prisma** y los datos, el **seed**. Los fragmentos de SQL de abajo quedan como referencia.
 
 ### 5) Las tablas (`api/sql/01_esquema.sql`)
 
@@ -1159,7 +1161,7 @@ Parece repetido: Zod ya valida el email y el service ya devuelve `404`. Pero cad
 
 > 🍽️ Siguiendo la analogía del restaurante: el **cocinero** revisa que el pescado esté fresco antes de cocinarlo, pero la **heladera** igual tiene que mantenerlo frío. Si el cocinero se distrae una vez, la heladera sigue cuidando la comida.
 
-> **💡 Dato extra:** con `docker compose down -v` + `up -d` + los dos scripts (`01_esquema.sql` y `02_datos.sql`) se vuelve a tener una base limpia con los datos de prueba en segundos.
+> **💡 Dato extra:** con `npm run db:reset` (Lección 6) se vuelve a tener una base limpia con los datos de prueba en segundos.
 
 ---
 
@@ -1351,7 +1353,7 @@ async function main() {
 
 ```ts
 function hora(hhmm: string) {
-  return new Date(`1970-01-01T${hhmm}:00Z`); // "09:00" → 09:00:00
+  return new Date(`1970-01-01T${hhmm}:00.000Z`); // "09:00" → 09:00:00
 }
 ```
 
@@ -1425,6 +1427,280 @@ async obtener(req: Request<IdParams>, res: Response) {
 > npx prisma migrate dev && npx prisma generate && npx prisma db seed
 > npm run dev
 > ```
+
+---
+
+## 📅 Lección 7 · Turnos, disponibilidad y respuestas uniformes
+
+La API suma el módulo de **turnos** (solo lectura por ahora) y un endpoint que calcula los **horarios libres** de un profesional. De paso, todas las respuestas pasan a tener **el mismo formato**.
+
+### 1) Nuevos archivos
+
+```
+api/src/
+├── shared/respuesta.ts       → responderOk, responderNegativo, responderError
+└── modules/
+    ├── turnos/               → routes, controller, service, repository, schema
+    └── horarios/
+        └── horarios.repository.ts   → solo repository: lo usa el service de turnos
+```
+
+- **`horarios/`** no tiene rutas propias: es un módulo "interno" que otro service consulta. No hace falta crear las cinco capas si no se usan.
+
+### 2) Un formato único de respuesta (`shared/respuesta.ts`)
+
+Antes, cada endpoint devolvía algo distinto: a veces el objeto, a veces `{ error }`, a veces nada (`204`). Ahora **todas** las respuestas tienen tres partes:
+
+```jsonc
+{
+  "meta":     { "endpoint": "/api/v1/turnos", "metodo": "GET", "status": 200, /* extras */ },
+  "response": { "result": true, "data": [ /* ... */ ] },
+  "error":    null
+}
+```
+
+| Función | Cuándo | `status` | `response` | `error` |
+|---------|--------|----------|------------|---------|
+| `responderOk(res, data, { status?, meta? })` | Salió bien | `200` (o el que se pase, ej. `201`) | `{ result: true, data }` | `null` |
+| `responderNegativo(res, description, data?, { meta? })` | La petición es válida pero la respuesta es "no" | `200` | `{ result: false, description, data }` | `null` |
+| `responderError(res, status, { description, codigo, detalles? })` | Algo falló | `4xx` / `5xx` | `null` | `{ status, description, codigo, detalles? }` |
+
+```ts
+function construirMeta(res: Response, status: number, extra: Meta = {}) {
+  return {
+    endpoint: res.req.originalUrl.split("?")[0], // sin el query
+    metodo: res.req.method,
+    status,
+    ...extra, // paginación, fecha, duración...
+  };
+}
+```
+
+- **Quien consume la API** (el frontend) siempre sabe dónde mirar: `response.data` si salió bien, `error` si no.
+- **`res.req`** → desde la respuesta se puede llegar a la petición, así que no hace falta pasar `req` a cada función.
+- **`...extra`** → el *spread* copia todas las propiedades de `extra` dentro del objeto. Así cada endpoint agrega su propia info a `meta`.
+- **Negativo ≠ error:** "el profesional no atiende ese día" no es un error del cliente ni del servidor; es una respuesta válida que dice que no. Por eso es `200` con `result: false`.
+- **`DELETE`** ahora responde `200` con `data: null` en vez de `204`, porque un `204` no puede llevar body y se perdería el formato.
+
+Los middlewares también usan `responderError`:
+
+```ts
+// manejadorDeErrores.ts
+if (err instanceof AppError) {
+  return responderError(res, err.status, { description: err.message, codigo: err.codigo });
+}
+```
+
+### 3) Códigos de error
+
+`AppError` ahora tiene un **`codigo`**: un texto fijo, en mayúsculas, que el frontend puede comparar sin depender del mensaje (que puede cambiar o traducirse).
+
+```ts
+export class AppError extends Error {
+  readonly status: number;
+  readonly codigo: string;
+
+  constructor(status: number, codigo: string, message: string) { /* ... */ }
+}
+
+export class NotFoundError extends AppError {
+  constructor(recurso: string) {
+    super(404, "NO_ENCONTRADO", `${recurso} no encontrado`);
+  }
+}
+
+export class ConflictError extends AppError {
+  constructor(mensaje: string) {
+    super(409, "CONFLICTO", mensaje);
+  }
+}
+```
+
+| `codigo` | Status | Lo genera |
+|----------|--------|-----------|
+| `DATOS_INVALIDOS` | `400` | `validar` (Zod) |
+| `JSON_INVALIDO` | `400` | `manejadorDeErrores` |
+| `NO_ENCONTRADO` | `404` | `NotFoundError` |
+| `RUTA_NO_ENCONTRADA` | `404` | `rutaNoEncontrada` |
+| `CONFLICTO` | `409` | `ConflictError` |
+| `ERROR_INTERNO` | `500` | `manejadorDeErrores` (cualquier error no previsto) |
+
+### 4) Email repetido → `409 Conflict`
+
+La columna `email` es `@unique`. Si se crea o actualiza un profesional con un email que ya existe, la base lo rechaza y Prisma lanza el error **`P2002`**. Sin atraparlo, terminaba en un `500` genérico. Ahora el repository lo traduce:
+
+```ts
+function esDuplicado(error: unknown) {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
+}
+
+const emailRepetido = () => new ConflictError("Ya existe un profesional con ese email");
+
+async crear(datos: ProfesionalInput) {
+  try {
+    return await prisma.profesional.create({ data: datos });
+  } catch (error) {
+    if (esDuplicado(error)) throw emailRepetido();
+    throw error; // cualquier otro error sigue de largo → 500
+  }
+},
+```
+
+- **`P2025` vs `P2002`:** para "no encontrado" el repository devuelve `null` y el service decide el `404`. Para el duplicado **tira el error directamente**, porque si devolviera `null` el service no podría distinguir "no existe" de "email repetido".
+- **`409 Conflict`** → la petición es válida, pero choca con el estado actual de los datos.
+- Es lo que anticipaba la Lección 5 (punto 11): la regla vive en la base (`UNIQUE`), y la API traduce el rechazo a un mensaje claro.
+
+### 5) Turnos: relaciones con `include` y paginación
+
+```ts
+const incluirResumen = {
+  profesional: { select: { id: true, nombre: true, especialidad: true } },
+  cliente: { select: { id: true, nombre: true } },
+} satisfies Prisma.TurnoInclude;
+
+listar(filtros, pagina, porPagina) {
+  const where: Prisma.TurnoWhereInput = {
+    profesionalId: filtros.profesionalId,
+    clienteId: filtros.clienteId,
+    estado: filtros.estado,
+    inicio: { gte: filtros.desde, lt: filtros.hasta },
+  };
+
+  return prisma.$transaction([
+    prisma.turno.findMany({
+      where,
+      include: incluirResumen,
+      orderBy: { inicio: "asc" },
+      skip: (pagina - 1) * porPagina,
+      take: porPagina,
+    }),
+    prisma.turno.count({ where }),
+  ]);
+},
+```
+
+| Pieza | Qué hace | Equivalente en SQL |
+|-------|----------|--------------------|
+| `include` | Trae también las filas relacionadas (profesional y cliente) | `JOIN` |
+| `select` dentro del `include` | Solo esas columnas (no el email del cliente, por ejemplo) | `SELECT p.id, p.nombre...` |
+| `gte` / `lt` | Mayor o igual / menor que | `>=` / `<` |
+| `skip` / `take` | Saltear N filas / traer N filas | `OFFSET` / `LIMIT` |
+| `count({ where })` | Cuántas filas cumplen el filtro (para saber el total de páginas) | `SELECT count(*)` |
+| `$transaction([...])` | Ejecuta las dos consultas juntas y con los mismos datos | `BEGIN ... COMMIT` |
+
+- **`satisfies Prisma.TurnoInclude`** → TypeScript verifica que el objeto sea un `include` válido, pero **sin perder** el tipo exacto: así sabe que el resultado tiene `profesional.nombre` pero no `profesional.email`.
+- **Paginación:** página 2 de a 10 → `skip: 10, take: 10`. El service arma `meta` con `{ pagina, porPagina, total, totalPaginas: Math.ceil(total / porPagina) }`.
+- **`?desde`** se compara con `gte` (incluido) y **`?hasta`** con `lt` (excluido): así dos rangos seguidos (`1 al 15` y `15 al 30`) no repiten turnos.
+
+El schema del query valida todo y usa **`z.coerce`**, porque en la URL todo llega como texto:
+
+```ts
+export const listarTurnosQuerySchema = z.object({
+    profesionalId: z.uuid().optional(),
+    estado: z.enum(["confirmado", "cancelado", "completado"]).optional(),
+    desde: z.coerce.date().optional(),      // "2026-11-01" → Date
+    hasta: z.coerce.date().optional(),
+    pagina: z.coerce.number().int().min(1).default(1),            // "2" → 2
+    porPagina: z.coerce.number().int().min(1).max(50).default(10), // tope para no traer miles
+  })
+  .refine((q) => !q.desde || !q.hasta || q.desde < q.hasta, {
+    error: "'desde' tiene que ser anterior a 'hasta'",
+    path: ["desde"],
+  });
+```
+
+- **`.refine(...)`** → una regla que mira **varios campos a la vez**. `path` indica a qué campo se le asigna el error en `detalles`.
+
+### 6) Índice compuesto
+
+```prisma
+model Turno {
+  // ...
+  @@index([profesionalId, inicio])
+}
+```
+
+Genera la migración `indice_turnos_profesional_inicio`:
+
+```sql
+CREATE INDEX "turnos_profesional_id_inicio_idx" ON "turnos"("profesional_id", "inicio");
+```
+
+- Un **índice** es como el índice de un libro: en vez de recorrer toda la tabla, Postgres va directo a las filas que buscás.
+- **Compuesto** (dos columnas, en ese orden) → sirve para la consulta más común: "turnos **de este profesional** entre **tal y tal hora**".
+- Hace más rápidas las lecturas y un poco más lentas las escrituras (hay que actualizar el índice). En tablas que se consultan mucho, conviene.
+
+### 7) Disponibilidad: `GET /profesionales/:id/disponibilidad?fecha=AAAA-MM-DD&duracion=30`
+
+```ts
+export const disponibilidadQuerySchema = z.object({
+  fecha: z.iso.date("La fecha tiene que tener formato AAAA-MM-DD"),
+  duracion: z.coerce.number().int().min(15).max(240).default(30), // minutos
+});
+```
+
+El cálculo vive en `turnosService.calcularDisponibilidad`:
+
+1. Verifica que el profesional exista (reusa `profesionalesService.obtener` → `404` si no).
+2. Busca **en paralelo** los horarios de atención de ese día de la semana y los turnos ocupados de ese día.
+3. Recorre cada horario en bloques de `duracion` minutos.
+4. Descarta los bloques que **se pisan** con un turno ocupado o que **ya pasaron**.
+
+```ts
+const [horarios, ocupados] = await Promise.all([
+  horariosRepository.listarPorDia(profesionalId, inicioDelDia.getDay()),
+  turnosRepository.listarOcupados(profesionalId, inicioDelDia, finDelDia),
+]);
+
+for (const horario of horarios) {
+  const desde = minutosDelDia(horario.inicio); // 09:00 → 540
+  const hasta = minutosDelDia(horario.fin);    // 13:00 → 780
+
+  for (let minuto = desde; minuto + duracion <= hasta; minuto += duracion) {
+    const inicio = new Date(anio, mes - 1, dia, 0, minuto);
+    const fin = new Date(inicio.getTime() + duracion * 60_000);
+
+    const pisaOtroTurno = ocupados.some((t) => t.inicio < fin && inicio < t.fin);
+    if (!pisaOtroTurno && inicio > ahora) libres.push({ inicio, fin });
+  }
+}
+```
+
+- **`Promise.all([...])`** → lanza las dos consultas **a la vez** y espera a que terminen las dos. Con dos `await` seguidos, la segunda esperaría a la primera sin necesidad.
+- **Minutos desde la medianoche** → trabajar con un número (`540`) es más simple que con horas y minutos por separado. `new Date(anio, mes - 1, dia, 0, 540)` → JavaScript acomoda los 540 minutos como 09:00.
+- **`mes - 1`** → en `Date` los meses van de `0` (enero) a `11` (diciembre).
+- **`getDay()`** → `0` domingo … `6` sábado: el mismo criterio que la columna `dia_semana`.
+- **¿Se pisan dos intervalos?** → `A.inicio < B.fin && B.inicio < A.fin`. Cubre todos los casos (uno adentro del otro, solapados a medias) y permite turnos **pegados** (uno termina 10:00 y el otro empieza 10:00).
+- **`listarOcupados`** ignora los turnos `cancelado`: ese horario vuelve a estar libre.
+- **`60_000`** → el `_` es solo un separador visual para leer números grandes (`60000`).
+- **Horas en UTC:** las columnas `time` se leen con `getUTCHours()` (así las guardó el seed), mientras que el día pedido se arma en **hora local** (Argentina). Por eso un turno de 09:00 sale en el JSON como `12:00:00.000Z`: es la misma hora, escrita en UTC.
+
+Respuestas posibles:
+
+| Caso | Status | `response` |
+|------|--------|------------|
+| Atiende ese día | `200` | `{ result: true, data: { atiende: true, horarios: [...] } }` y `meta.cantidad` |
+| No atiende ese día (ej. domingo) | `200` | `{ result: false, description: "El profesional no atiende ese día", data: { atiende: false, horarios: [] } }` |
+| Fecha mal formada | `400` | `error.codigo: "DATOS_INVALIDOS"` |
+| Profesional inexistente | `404` | `error.codigo: "NO_ENCONTRADO"` |
+
+### 8) Seed y `requests.http`
+
+- **Seed:** Laura (`1111...`) ahora atiende de **lunes a viernes de 09:00 a 13:00**, generado con un `map` sobre los días en vez de repetir cinco objetos:
+
+```ts
+...[1, 2, 3, 4, 5].map((dia) => ({
+  profesionalId: "11111111-1111-4111-8111-111111111111",
+  diaSemana: dia,
+  inicio: hora("09:00"),
+  fin: hora("13:00"),
+})),
+```
+
+- **`requests.http`** suma las secciones **Turnos** (listar, paginar, filtrar, rango invertido, `porPagina` excesivo) y **Disponibilidad** (bloques de 45 minutos, un domingo, fecha mal formada). Las fechas de disponibilidad hay que cambiarlas por un día hábil futuro: los bloques que ya pasaron no se muestran.
+- **`sql/consultas.sql`** suma la consulta de horarios de un profesional ordenados por día y hora.
+
+> 🍽️ **Analogía:** el **mozo** ahora entrega todos los platos en la **misma bandeja** (`meta`, `response`, `error`), así el cliente sabe siempre dónde buscar. Y cuando alguien pregunta "¿hay mesa el domingo?", el mozo no rompe nada ni llama al encargado: contesta "no, ese día está cerrado" (`result: false`).
 
 ---
 

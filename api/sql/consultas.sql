@@ -15,6 +15,12 @@ SELECT nombre, email FROM profesionales
 WHERE especialidad = 'Kinesiología'
 ORDER BY nombre;
 
+-- horarios disponibles de un profesional específico, ordenados por día y hora
+SELECT dia_semana, inicio, fin
+FROM horarios_disponibles
+WHERE profesional_id = '11111111-1111-4111-8111-111111111111'
+ORDER BY dia_semana, inicio;
+
 -- filtrar por fecha de mañana
 SELECT * FROM turnos
 WHERE inicio >= date_trunc('day', now()) + interval '1 day'

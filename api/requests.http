@@ -172,6 +172,36 @@ Content-Type: application/json
 DELETE {{baseUrl}}/profesionales/{{idInexistente}}
 
 # =========================================================
+# ===== Turnos
+# =========================================================
+
+### Listar turnos (primera página)
+GET {{baseUrl}}/turnos
+
+### Paginación: de a 1 por página, segunda página
+GET {{baseUrl}}/turnos?porPagina=1&pagina=2
+
+### Filtrar por profesional y estado
+GET {{baseUrl}}/turnos?profesionalId={{idLaura}}&estado=confirmado
+
+### Rango de fechas invertido → 400
+GET {{baseUrl}}/turnos?desde=2026-12-01T00:00:00-03:00&hasta=2026-11-01T00:00:00-03:00
+
+### porPagina excesivo → 400
+GET {{baseUrl}}/turnos?porPagina=1000
+
+# ===== Disponibilidad (cambiá la fecha por mañana, en día hábil)
+
+### Disponibilidad de Laura en bloques de 45 minutos
+GET {{baseUrl}}/profesionales/{{idLaura}}/disponibilidad?fecha=2026-10-16&duracion=45
+
+### Laura un domingo → data vacía, meta.atiende false
+GET {{baseUrl}}/profesionales/{{idLaura}}/disponibilidad?fecha=2026-10-18
+
+### Fecha mal formada → 400
+GET {{baseUrl}}/profesionales/{{idLaura}}/disponibilidad?fecha=16/10/2026
+
+# =========================================================
 # ===== Rutas inexistentes
 # =========================================================
 

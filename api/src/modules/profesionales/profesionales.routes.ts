@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { validar } from "../../middlewares/validar.js";
 import { idParamsSchema } from "../../shared/schemas.js";
-import { profesionalSchema, listarProfesionalesQuerySchema } from "./profesionales.schema.js";
+import { profesionalSchema, listarProfesionalesQuerySchema, disponibilidadQuerySchema } from "./profesionales.schema.js";
 import { profesionalesController } from "./profesionales.controller.js";
 
 export const profesionalesRouter = Router();
@@ -12,3 +12,4 @@ profesionalesRouter.get("/:id", validar({ params: idParamsSchema }), profesional
 profesionalesRouter.post("/", validar({ body: profesionalSchema }), profesionalesController.crear);
 profesionalesRouter.put("/:id", validar({ params: idParamsSchema, body: profesionalSchema }), profesionalesController.actualizar);
 profesionalesRouter.delete("/:id", validar({ params: idParamsSchema }), profesionalesController.eliminar);
+profesionalesRouter.get("/:id/disponibilidad", validar({ params: idParamsSchema, query: disponibilidadQuerySchema }), profesionalesController.disponibilidad);

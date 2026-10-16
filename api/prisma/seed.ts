@@ -11,7 +11,7 @@ function hoyMas(dias: number, horas: number, minutos = 0) {
 // Las columnas `time` son DateTime en Prisma: se arma una fecha cualquiera con esa hora en UTC
 // y Postgres guarda solo la hora ("09:00" → 09:00:00).
 function hora(hhmm: string) {
-  return new Date(`1970-01-01T${hhmm}:00Z`);
+  return new Date(`1970-01-01T${hhmm}:00.000Z`);
 }
 
 async function main() {
@@ -44,14 +44,17 @@ async function main() {
   });
 
   await prisma.horarioDisponible.createMany({
-    data: [
-        { profesionalId: "11111111-1111-4111-8111-111111111111", diaSemana: 0, inicio: hora("09:00"), fin: hora("12:00") },
-        { profesionalId: "11111111-1111-4111-8111-111111111111", diaSemana: 2, inicio: hora("14:00"), fin: hora("18:00") },
-        { profesionalId: "22222222-2222-4222-8222-222222222222", diaSemana: 1, inicio: hora("10:00"), fin: hora("13:00") },
-        { profesionalId: "22222222-2222-4222-8222-222222222222", diaSemana: 3, inicio: hora("15:00"), fin: hora("19:00") },
-        { profesionalId: "33333333-3333-4333-8333-333333333333", diaSemana: 4, inicio: hora("08:00"), fin: hora("12:00") },
-    ],
-  });
+  data: [
+    ...[1, 2, 3, 4, 5].map((dia) => ({
+      profesionalId: "11111111-1111-4111-8111-111111111111",
+      diaSemana: dia,
+      inicio: hora("09:00"),
+      fin: hora("13:00"),
+    })),
+    { profesionalId: "22222222-2222-4222-8222-222222222222", diaSemana: 2, inicio: hora("14:00"), fin: hora("18:00") },
+    { profesionalId: "22222222-2222-4222-8222-222222222222", diaSemana: 4, inicio: hora("14:00"), fin: hora("18:00") },
+  ],
+});
 
   console.log("Seed completado");
 }
