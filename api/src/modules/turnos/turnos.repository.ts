@@ -9,7 +9,28 @@ const incluirResumen = {
   cliente: { select: { id: true, nombre: true } },
 } satisfies Prisma.TurnoInclude;
 
+function esSuperposicion(error: unknown) {
+  return error instanceof Error && error.message.includes("turnos_sin_superposicion");
+}
+
 export const turnosRepository = {
+
+  async crear(
+    datos: { profesionalId: string; clienteId: string; inicio: Date; fin: Date },
+    db: Prisma.TransactionClient = prisma,
+  ) {
+    try {
+      return await db.turno.create({ data: datos, include: incluirResumen });
+    } catch (error) {
+      if (esSuperposicion(error)) return null;
+      throw error;
+    }
+  },
+
+  cambiarEstado(id: string, estado: "confirmado" | "cancelado" | "completado", db: Prisma.TransactionClient = prisma) {
+    return db.turno.update({ where: { id }, data: { estado } });
+  },
+
   listar(filtros: FiltrosTurnos, pagina: number, porPagina: number) {
     const where: Prisma.TurnoWhereInput = {
       profesionalId: filtros.profesionalId,

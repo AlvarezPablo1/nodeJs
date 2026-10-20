@@ -1,14 +1,87 @@
-import { NotFoundError } from "../../errors/appError.js";
+import { NotFoundError, ReglaDeNegocioError } from "../../errors/appError.js";
+import { prisma } from "../../lib/prisma.js";
+import { clientesRepository } from "../clientes/clientes.repository.js";
 import { horariosRepository } from "../horarios/horarios.repository.js";
 import { profesionalesService } from "../profesionales/profesionales.service.js";
 import { turnosRepository } from "./turnos.repository.js";
-import type { ListarTurnosQuery } from "./turnos.schema.js";
+import type { ListarTurnosQuery, ReservarTurnoInput } from "./turnos.schema.js";
 
 function minutosDelDia(hora: Date) {
   return hora.getUTCHours() * 60 + hora.getUTCMinutes();
 }
 
+async function verificarReglasDeHorario(profesionalId: string, inicio: Date, fin: Date) {
+  if (inicio <= new Date()) {
+    throw new ReglaDeNegocioError("TURNO_EN_EL_PASADO", "No se puede reservar un turno en el pasado");
+  }
+
+  const horarios = await horariosRepository.listarPorDia(profesionalId, inicio.getDay());
+  const minutoInicio = inicio.getHours() * 60 + inicio.getMinutes();
+  const minutoFin = minutoInicio + (fin.getTime() - inicio.getTime()) / 60_000;
+
+  const dentroDeUnaFranja = horarios.some(
+    (h) => minutosDelDia(h.inicio) <= minutoInicio && minutoFin <= minutosDelDia(h.fin),
+  );
+
+  if (!dentroDeUnaFranja) {
+    throw new ReglaDeNegocioError("FUERA_DE_HORARIO", "El horario está fuera de la atención del profesional");
+  }
+}
+
 export const turnosService = {
+
+  async reprogramar(id: string, nuevoInicio: Date, duracion?: number) {
+    const actual = await turnosService.obtener(id);
+
+    if (actual.estado !== "confirmado") {
+      throw new ReglaDeNegocioError("TURNO_NO_REPROGRAMABLE", "Solo se pueden reprogramar turnos confirmados");
+    }
+
+    const minutos = duracion ?? (actual.fin.getTime() - actual.inicio.getTime()) / 60_000;
+    const fin = new Date(nuevoInicio.getTime() + minutos * 60_000);
+
+    await verificarReglasDeHorario(actual.profesionalId, nuevoInicio, fin);
+
+    return prisma.$transaction(async (tx) => {
+      await turnosRepository.cambiarEstado(id, "cancelado", tx);
+
+      const nuevo = await turnosRepository.crear(
+        { profesionalId: actual.profesionalId, clienteId: actual.clienteId, inicio: nuevoInicio, fin },
+        tx,
+      );
+
+      if (!nuevo) {
+        throw new ReglaDeNegocioError("HORARIO_OCUPADO", "El nuevo horario ya está ocupado");
+      }
+
+      return nuevo;
+    });
+  },
+
+  async reservar(datos: ReservarTurnoInput) {
+    const { profesionalId, clienteId, inicio, duracion } = datos;
+    const fin = new Date(inicio.getTime() + duracion * 60_000);
+
+    await profesionalesService.obtener(profesionalId);
+
+    const cliente = await clientesRepository.buscarPorId(clienteId);
+    if (!cliente) throw new NotFoundError("Cliente");
+
+    await verificarReglasDeHorario(profesionalId, inicio, fin);
+
+    const ocupados = await turnosRepository.listarOcupados(profesionalId, inicio, fin);
+    if (ocupados.length > 0) {
+      throw new ReglaDeNegocioError("HORARIO_OCUPADO", "El horario ya está ocupado");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500)); // TEMPORAL: agranda la ventana de la carrera
+    const turno = await turnosRepository.crear({ profesionalId, clienteId, inicio, fin });
+    if (!turno) {
+      throw new ReglaDeNegocioError("HORARIO_OCUPADO", "El horario ya está ocupado");
+    }
+
+    return turno;
+  },
+  
   async listar(query: ListarTurnosQuery) {
     const { pagina, porPagina, ...filtros } = query;
     const [turnos, total] = await turnosRepository.listar(filtros, pagina, porPagina);

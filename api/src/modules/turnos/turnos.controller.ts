@@ -13,4 +13,13 @@ export const turnosController = {
   async obtener(req: Request<IdParams>, res: Response) {
     responderOk(res, await turnosService.obtener(req.params.id));
   },
+
+  async reservar(req: Request, res: Response) {
+    responderOk(res, await turnosService.reservar(req.body), { status: 201 });
+  },
+
+  async reprogramar(req: Request<IdParams>, res: Response) {
+    const { inicio, duracion } = req.body;
+    responderOk(res, await turnosService.reprogramar(req.params.id, inicio, duracion), { status: 201 });
+  },
 };

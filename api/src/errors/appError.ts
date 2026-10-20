@@ -9,6 +9,15 @@ export class AppError extends Error {
     this.name = "AppError";
   }
 }
+export class ReglaDeNegocioError extends Error {
+  readonly codigo: string;
+
+  constructor(codigo: string, message: string) {
+    super(message);
+    this.codigo = codigo;
+    this.name = "ReglaDeNegocioError";
+  }
+}
 
 export class NotFoundError extends AppError {
   constructor(recurso: string) {

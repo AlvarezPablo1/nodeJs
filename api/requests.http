@@ -1,6 +1,8 @@
 @baseUrl = http://localhost:3000/api/v1
 @idLaura = 11111111-1111-4111-8111-111111111111
 @idMartin = 22222222-2222-4222-8222-222222222222
+@idCarlos = aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+@idLucia = bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
 @idInexistente = 99999999-9999-4999-8999-999999999999
 
 # =========================================================
@@ -76,7 +78,7 @@ Content-Type: application/json
 }
 
 ### 4. Eliminar el recién creado → 204
-DELETE {{baseUrl}}/profesionales/{{crear.response.body.id}}
+DELETE {{baseUrl}}/profesionales/{{idLaura}}
 
 ### 5. Verlo después de eliminado → 404
 GET {{baseUrl}}/profesionales/{{crear.response.body.id}}
@@ -203,6 +205,83 @@ GET {{baseUrl}}/profesionales/{{idLaura}}/disponibilidad?fecha=2026-10-18
 
 ### Fecha mal formada → 400
 GET {{baseUrl}}/profesionales/{{idLaura}}/disponibilidad?fecha=16/10/2026
+
+### Reservar turno libre → 201
+POST {{baseUrl}}/turnos
+Content-Type: application/json
+
+{
+  "profesionalId": "{{idLaura}}",
+  "clienteId": "{{idCarlos}}",
+  "inicio": "2026-10-20T12:00:00-03:00",
+  "duracion": 30
+}
+
+### Reservar encima de un turno existente → 200, result false, HORARIO_OCUPADO
+POST {{baseUrl}}/turnos
+Content-Type: application/json
+
+{
+  "profesionalId": "{{idLaura}}",
+  "clienteId": "{{idLucia}}",
+  "inicio": "2026-10-20T10:30:00-03:00",
+  "duracion": 30
+}
+
+### Fuera de horario (Laura atiende hasta las 13) → 200, result false, FUERA_DE_HORARIO
+POST {{baseUrl}}/turnos
+Content-Type: application/json
+
+{
+  "profesionalId": "{{idLaura}}",
+  "clienteId": "{{idCarlos}}",
+  "inicio": "2026-10-20T12:45:00-03:00",
+  "duracion": 30
+}
+
+### En el pasado → 200, result false, TURNO_EN_EL_PASADO
+POST {{baseUrl}}/turnos
+Content-Type: application/json
+
+{
+  "profesionalId": "{{idLaura}}",
+  "clienteId": "{{idCarlos}}",
+  "inicio": "2026-01-05T10:00:00-03:00",
+  "duracion": 30
+}
+
+### Fecha sin zona horaria → 400
+POST {{baseUrl}}/turnos
+Content-Type: application/json
+
+{
+  "profesionalId": "{{idLaura}}",
+  "clienteId": "{{idCarlos}}",
+  "inicio": "2026-10-20T12:00:00",
+  "duracion": 30
+}
+
+### Duración que no es múltiplo de 15 → 400
+POST {{baseUrl}}/turnos
+Content-Type: application/json
+
+{
+  "profesionalId": "{{idLaura}}",
+  "clienteId": "{{idCarlos}}",
+  "inicio": "2026-10-20T12:00:00-03:00",
+  "duracion": 20
+}
+
+### Cliente inexistente → 404
+POST {{baseUrl}}/turnos
+Content-Type: application/json
+
+{
+  "profesionalId": "{{idLaura}}",
+  "clienteId": "{{idInexistente}}",
+  "inicio": "2026-10-20T12:00:00-03:00",
+  "duracion": 30
+}
 
 # =========================================================
 # ===== Rutas inexistentes

@@ -23,7 +23,8 @@ turnero/
 | 4 | [Arquitectura en capas](#-lección-4--arquitectura-en-capas) | Separar el código en módulos y capas: routes, controller, service, repository; errores personalizados |
 | 5 | [Docker y PostgreSQL](#-lección-5--docker-y-postgresql) | Base de datos en un contenedor, psql, tablas con claves, consultas SQL (`JOIN`, `UPDATE`, `DELETE`) y reglas en la base |
 | 6 | [Prisma ORM](#-lección-6--prisma-orm) | Conectar la API a PostgreSQL con Prisma 7: schema, migraciones, cliente, seed y repository asíncrono |
-| 7 | [Turnos, disponibilidad y respuestas uniformes](#-lección-7--turnos-disponibilidad-y-respuestas-uniformes) | Formato único de respuesta, códigos de error, `409` por email repetido, relaciones con `include`, paginación, índices y cálculo de horarios libres |
+| 7 | [Turnos, disponibilidad y respuestas uniformes](#-lección-7--turnos-disponibilidad-y-respuestas-uniformes) | Formato único de respuesta, códigos de error, `409` por email repetido, relaciones con `include`, paginación, índices, cálculo de horarios libres, orden y estadísticas |
+| 8 | [Reservar turnos y condiciones de carrera](#-lección-8--reservar-turnos-y-condiciones-de-carrera) | Reservar y reprogramar, reglas de negocio con `result: false`, condición de carrera, restricción de exclusión en Postgres y transacciones |
 
 ---
 
@@ -1735,7 +1736,313 @@ Respuestas posibles:
 - **`requests.http`** suma las secciones **Turnos** (listar, paginar, filtrar, rango invertido, `porPagina` excesivo) y **Disponibilidad** (bloques de 45 minutos, un domingo, fecha mal formada). Las fechas de disponibilidad hay que cambiarlas por un día hábil futuro: los bloques que ya pasaron no se muestran.
 - **`sql/consultas.sql`** suma la consulta de horarios de un profesional ordenados por día y hora.
 
+### 9) Orden y estadísticas
+
+**Orden del listado** → `GET /turnos?orden=-inicio`:
+
+```ts
+// schema
+orden: z.enum(["inicio", "-inicio"]).default("inicio"),
+
+// repository: el orden no es un filtro, va en orderBy (no en where)
+orderBy: { inicio: filtros.orden === "-inicio" ? "desc" : "asc" },
+```
+
+- El **`-`** adelante es una convención común para pedir orden **descendente** (del más nuevo al más viejo).
+- **`where`** decide **qué filas** se traen y solo acepta columnas; **`orderBy`** decide **en qué orden**. Poner `orden` en el `where` da un error de tipos, porque la tabla no tiene esa columna.
+
+**Estadísticas de un profesional** → `GET /profesionales/:id/estadisticas`:
+
+```ts
+// repository: cuántos turnos hay de cada estado
+contarPorEstado(profesionalId: string) {
+  return prisma.turno.groupBy({
+    by: ["estado"],
+    where: { profesionalId },
+    _count: { _all: true },
+  });
+},
+```
+
+```ts
+// service: arma una respuesta completa, con 0 en los estados que no tienen turnos
+const porEstado: Record<"confirmado" | "cancelado" | "completado", number> = {
+  confirmado: 0,
+  cancelado: 0,
+  completado: 0,
+};
+
+for (const grupo of grupos) {
+  porEstado[grupo.estado] = grupo._count._all;
+}
+
+return { total, porEstado };
+```
+
+- **`groupBy`** equivale a `SELECT estado, count(*) FROM turnos WHERE profesional_id = ... GROUP BY estado`: devuelve **una fila por estado**.
+- Si un estado no tiene turnos, `groupBy` **no** devuelve fila para él. Por eso el service arranca todos en `0`: el frontend siempre recibe las tres claves.
+- **`Record<K, V>`** → tipo de un objeto con exactamente esas claves (`K`) y valores de tipo `V`.
+
 > 🍽️ **Analogía:** el **mozo** ahora entrega todos los platos en la **misma bandeja** (`meta`, `response`, `error`), así el cliente sabe siempre dónde buscar. Y cuando alguien pregunta "¿hay mesa el domingo?", el mozo no rompe nada ni llama al encargado: contesta "no, ese día está cerrado" (`result: false`).
+
+---
+
+## 🔒 Lección 8 · Reservar turnos y condiciones de carrera
+
+La API ya puede **crear** turnos: reservar (`POST /turnos`) y reprogramar (`POST /turnos/:id/reprogramar`). Al escribir datos aparece un problema nuevo: **dos personas reservando el mismo horario al mismo tiempo**.
+
+### 1) Validar el body de la reserva
+
+```ts
+const fechaHoraSchema = z
+  .iso.datetime({ offset: true, error: "La fecha tiene que tener formato ISO con zona horaria, ..." })
+  .transform((valor) => new Date(valor));
+
+const duracionSchema = z.number().int().min(15).max(240)
+  .multipleOf(15, "La duración tiene que ser múltiplo de 15 minutos");
+
+export const reservarTurnoSchema = z.object({
+  profesionalId: z.uuid("El profesionalId tiene que ser un UUID válido"),
+  clienteId: z.uuid("El clienteId tiene que ser un UUID válido"),
+  inicio: fechaHoraSchema,
+  duracion: duracionSchema.default(30),
+});
+
+export const reprogramarTurnoSchema = z.object({
+  inicio: fechaHoraSchema,
+  duracion: duracionSchema.optional(), // si no viene, se mantiene la del turno original
+});
+```
+
+- **`offset: true`** → exige la zona horaria (`-03:00` o `Z`). Sin ella, `"2026-10-21T09:00:00"` es ambiguo: ¿09:00 de Argentina o de Londres? Mejor rechazarlo con `400`.
+- **`.transform(...)`** → después de validar, convierte el texto en un `Date`. El service recibe directamente una fecha, no un string.
+- **Schemas reutilizables** (`fechaHoraSchema`, `duracionSchema`) → se definen una vez y se usan en reservar y en reprogramar.
+
+### 2) Reglas de negocio: `ReglaDeNegocioError` y `result: false`
+
+Algunas reservas son **válidas en formato** pero **no se pueden hacer**: el horario ya pasó, está fuera de la atención del profesional, o ya está ocupado. No es un error del servidor ni un dato mal escrito: es un "no" del negocio.
+
+```ts
+// appError.ts
+export class ReglaDeNegocioError extends Error {
+  readonly codigo: string;
+
+  constructor(codigo: string, message: string) {
+    super(message);
+    this.codigo = codigo;
+    this.name = "ReglaDeNegocioError";
+  }
+}
+
+// manejadorDeErrores.ts
+if (err instanceof ReglaDeNegocioError) {
+  return responderNegativo(res, err.message, { codigo: err.codigo });
+}
+```
+
+Responde `200` con `result: false`, igual que "el profesional no atiende ese día" (Lección 7):
+
+```jsonc
+{
+  "meta": { "endpoint": "/api/v1/turnos", "metodo": "POST", "status": 200 },
+  "response": { "result": false, "description": "El horario ya está ocupado", "data": { "codigo": "HORARIO_OCUPADO" } },
+  "error": null
+}
+```
+
+| `codigo` | Cuándo |
+|----------|--------|
+| `TURNO_EN_EL_PASADO` | El `inicio` ya pasó |
+| `FUERA_DE_HORARIO` | El turno no entra completo en ninguna franja de atención de ese día |
+| `HORARIO_OCUPADO` | Se pisa con otro turno no cancelado |
+| `TURNO_NO_REPROGRAMABLE` | Se quiere reprogramar un turno que no está `confirmado` |
+
+- **`ReglaDeNegocioError` no hereda de `AppError`** → no tiene `status`, porque siempre responde `200`. Así el `manejadorDeErrores` no la confunde con un `4xx`.
+- **Diferencia con `404`:** profesional o cliente inexistente siguen siendo `NotFoundError` → `404`, porque el recurso pedido no existe.
+
+`verificarReglasDeHorario` concentra las reglas de horario y la usan reservar y reprogramar:
+
+```ts
+async function verificarReglasDeHorario(profesionalId: string, inicio: Date, fin: Date) {
+  if (inicio <= new Date()) {
+    throw new ReglaDeNegocioError("TURNO_EN_EL_PASADO", "No se puede reservar un turno en el pasado");
+  }
+
+  const horarios = await horariosRepository.listarPorDia(profesionalId, inicio.getDay());
+  const minutoInicio = inicio.getHours() * 60 + inicio.getMinutes();
+  const minutoFin = minutoInicio + (fin.getTime() - inicio.getTime()) / 60_000;
+
+  const dentroDeUnaFranja = horarios.some(
+    (h) => minutosDelDia(h.inicio) <= minutoInicio && minutoFin <= minutosDelDia(h.fin),
+  );
+
+  if (!dentroDeUnaFranja) {
+    throw new ReglaDeNegocioError("FUERA_DE_HORARIO", "El horario está fuera de la atención del profesional");
+  }
+}
+```
+
+- **`some`** → `true` si **al menos una** franja cumple. Un turno de 12:45 a 13:15 no entra en la franja de 09:00 a 13:00 → `FUERA_DE_HORARIO`.
+
+### 3) Reservar
+
+```ts
+async reservar(datos: ReservarTurnoInput) {
+  const { profesionalId, clienteId, inicio, duracion } = datos;
+  const fin = new Date(inicio.getTime() + duracion * 60_000);
+
+  await profesionalesService.obtener(profesionalId);          // 404 si no existe
+
+  const cliente = await clientesRepository.buscarPorId(clienteId);
+  if (!cliente) throw new NotFoundError("Cliente");            // 404 si no existe
+
+  await verificarReglasDeHorario(profesionalId, inicio, fin);  // pasado / fuera de horario
+
+  const ocupados = await turnosRepository.listarOcupados(profesionalId, inicio, fin);
+  if (ocupados.length > 0) {
+    throw new ReglaDeNegocioError("HORARIO_OCUPADO", "El horario ya está ocupado");
+  }
+
+  const turno = await turnosRepository.crear({ profesionalId, clienteId, inicio, fin });
+  if (!turno) {
+    throw new ReglaDeNegocioError("HORARIO_OCUPADO", "El horario ya está ocupado");
+  }
+  return turno;
+},
+```
+
+- Se suma un módulo **`clientes/`** con solo un repository (`buscarPorId`), igual que `horarios/`.
+- El orden de los chequeos importa: primero lo barato y obvio (existe, no es pasado), después lo que consulta más datos.
+- ¿Por qué hay **dos** chequeos de `HORARIO_OCUPADO`? Por la condición de carrera 👇
+
+### 4) La condición de carrera
+
+Una **condición de carrera** (*race condition*) pasa cuando el resultado depende de **qué petición llega primero** a cada paso. Dos clientes reservan las 09:00 de Laura casi a la vez:
+
+```
+         Carlos                              Lucía
+listarOcupados → [] (libre)
+                                    listarOcupados → [] (libre)
+crear → ✅ turno de Carlos
+                                    crear → ✅ turno de Lucía   ← ¡dos turnos a la misma hora!
+```
+
+Los dos preguntan "¿está libre?" **antes** de que cualquiera guarde, y los dos reciben "sí". El chequeo del service **no alcanza**: entre preguntar y guardar siempre hay una ventana, aunque sea de milisegundos.
+
+**`scripts/carrera.ts`** lo reproduce mandando dos reservas iguales en paralelo con `Promise.all`:
+
+```ts
+export {}; // sin import/export el archivo es un "script" y no permite await suelto
+
+const [carlos, lucia] = await Promise.all([
+  reservar("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+  reservar("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+]);
+
+console.log("Carlos:", carlos.status, JSON.stringify((await carlos.json()).response?.result));
+console.log("Lucía:", lucia.status, JSON.stringify((await lucia.json()).response?.result));
+```
+
+```bash
+cd api && npx tsx scripts/carrera.ts   # con la API levantada (npm run dev)
+```
+
+- **Top-level await** → usar `await` fuera de una función `async`. Solo se puede en un **módulo** (un archivo con algún `import` o `export`); por eso el `export {}` vacío.
+- Para que la carrera se vea seguro, se puede agrandar la ventana con una pausa entre el chequeo y el `crear` (`await new Promise((r) => setTimeout(r, 500))`). Es **solo para la prueba**.
+- La fecha del script es fija: hay que cambiarla por un día hábil futuro y correr `npm run db:reset` entre prueba y prueba (si no, la segunda vez las dos dan `HORARIO_OCUPADO`).
+
+### 5) La solución: una restricción de exclusión en Postgres
+
+Igual que con el email repetido (Lección 5, punto 11): **solo la base lo frena de verdad**, porque procesa las escrituras de a una. Migración `evitar_turnos_superpuestos`, creada con `--create-only` porque Prisma no sabe escribir esta regla:
+
+```sql
+-- Necesaria para combinar "igual a" (=) con "se superpone" (&&) en la misma regla
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+-- Un profesional no puede tener dos turnos no cancelados que se superpongan
+ALTER TABLE "turnos"
+  ADD CONSTRAINT "turnos_sin_superposicion"
+  EXCLUDE USING gist (
+    "profesional_id" WITH =,
+    tstzrange("inicio", "fin") WITH &&
+  )
+  WHERE ("estado" <> 'cancelado');
+```
+
+| Pieza | Qué significa |
+|-------|---------------|
+| `EXCLUDE` | Prohíbe que existan **dos filas** que cumplan todas las condiciones a la vez. Es como un `UNIQUE`, pero con otros operadores además de `=` |
+| `profesional_id WITH =` | ... del **mismo** profesional |
+| `tstzrange(inicio, fin) WITH &&` | ... cuyos intervalos **se superpongan**. `tstzrange` arma un rango `[inicio, fin)`: incluye el inicio y excluye el fin, así un turno que termina 10:00 y otro que empieza 10:00 **no** chocan |
+| `WHERE estado <> 'cancelado'` | Los cancelados no cuentan: su horario vuelve a quedar libre |
+| `USING gist` + `btree_gist` | El tipo de índice que sabe comparar rangos. La extensión `btree_gist` le enseña además a comparar uuid con `=` |
+
+Si dos reservas chocan, la base rechaza la segunda. El repository reconoce ese error por el **nombre de la restricción** y devuelve `null`:
+
+```ts
+function esSuperposicion(error: unknown) {
+  return error instanceof Error && error.message.includes("turnos_sin_superposicion");
+}
+
+async crear(datos, db: Prisma.TransactionClient = prisma) {
+  try {
+    return await db.turno.create({ data: datos, include: incluirResumen });
+  } catch (error) {
+    if (esSuperposicion(error)) return null;
+    throw error;
+  }
+},
+```
+
+Con la restricción, la carrera termina bien: **una reserva da `201`** y la otra **`200` con `HORARIO_OCUPADO`**.
+
+- **¿Para qué dejar `listarOcupados` en el service?** Resuelve el 99% de los casos con un mensaje claro y sin intentar escribir. La restricción cubre el 1% restante (la carrera).
+- **Defensa en dos capas**, otra vez: el service para dar buenos mensajes, la base para garantizar que nunca se rompa la regla.
+
+### 6) Reprogramar con una transacción
+
+`POST /turnos/:id/reprogramar` cancela el turno actual y crea uno nuevo en otro horario:
+
+```ts
+async reprogramar(id: string, nuevoInicio: Date, duracion?: number) {
+  const actual = await turnosService.obtener(id);
+
+  if (actual.estado !== "confirmado") {
+    throw new ReglaDeNegocioError("TURNO_NO_REPROGRAMABLE", "Solo se pueden reprogramar turnos confirmados");
+  }
+
+  const minutos = duracion ?? (actual.fin.getTime() - actual.inicio.getTime()) / 60_000;
+  const fin = new Date(nuevoInicio.getTime() + minutos * 60_000);
+
+  await verificarReglasDeHorario(actual.profesionalId, nuevoInicio, fin);
+
+  return prisma.$transaction(async (tx) => {
+    await turnosRepository.cambiarEstado(id, "cancelado", tx);
+
+    const nuevo = await turnosRepository.crear(
+      { profesionalId: actual.profesionalId, clienteId: actual.clienteId, inicio: nuevoInicio, fin },
+      tx,
+    );
+
+    if (!nuevo) {
+      throw new ReglaDeNegocioError("HORARIO_OCUPADO", "El nuevo horario ya está ocupado");
+    }
+    return nuevo;
+  });
+},
+```
+
+- **Transacción** → un grupo de operaciones que se aplican **todas o ninguna**. Si el nuevo horario está ocupado, el `throw` hace **rollback** y el turno original **vuelve a quedar confirmado**. Sin transacción, el cliente se quedaría sin ningún turno.
+- **`$transaction(async (tx) => ...)`** (transacción interactiva) → a diferencia de `$transaction([...])` de la Lección 7, permite usar el resultado de una operación para decidir la siguiente.
+- **`tx`** → el cliente "dentro de la transacción". Los métodos del repository reciben un parámetro opcional **`db: Prisma.TransactionClient = prisma`**: por defecto usan el cliente normal, pero si se les pasa `tx` participan de la transacción.
+- **Primero cancelar, después crear** → así se puede mover un turno **dentro de su propio horario** (de 09:00 a 09:15): como el original ya está cancelado, la restricción no lo cuenta.
+- **`duracion ?? ...`** → el operador `??` usa el valor de la derecha solo si el de la izquierda es `null` o `undefined`. Si no se manda duración, se mantiene la del turno original.
+
+### 7) `requests.http`
+
+Suma los casos de reserva: turno libre (`201`), encima de otro turno (`HORARIO_OCUPADO`), fuera de horario (`FUERA_DE_HORARIO`), en el pasado (`TURNO_EN_EL_PASADO`), fecha sin zona horaria (`400`), duración que no es múltiplo de 15 (`400`) y cliente inexistente (`404`). También agrega las variables `@idCarlos` e `@idLucia`.
+
+> 🍽️ **Analogía:** dos mozos toman, al mismo tiempo, la reserva de la **misma mesa** para las 21 h. Los dos miran el cuaderno, la ven libre y la anotan. La solución no es pedirles que miren más rápido: es que haya **un solo cuaderno** que no deje escribir una reserva encima de otra (la restricción de la base). Y reprogramar es **tachar y anotar en un solo movimiento**: si la mesa nueva está tomada, la reserva vieja no se tacha (la transacción).
 
 ---
 
