@@ -169,12 +169,14 @@ if (!connectionString) {
   throw new Error("Falta la variable de entorno DATABASE_URL");
 }
 
-const adapter = new PrismaPg({ connectionString });
+// Sesión en UTC: el adapter manda las fechas en UTC sin zona horaria. Si la base usa otra
+// (por ejemplo por TZ/PGTZ en compose.yaml), las interpreta en esa zona y las guarda corridas.
+const adapter = new PrismaPg({ connectionString, options: "-c timezone=UTC" });
 
 export const prisma = new PrismaClient({ adapter });
 ```
 
-Una sola instancia para toda la app.
+Una sola instancia para toda la app. **No sacar `options: "-c timezone=UTC"`**: sin eso, con `TZ`/`PGTZ` en el compose, las columnas `timestamptz` quedan corridas (un turno de las 12:30 se guarda como 15:30). La API no lo nota porque lee con el mismo error, pero las consultas SQL con `now()` dan mal.
 
 ## Paso 8 · Seed
 

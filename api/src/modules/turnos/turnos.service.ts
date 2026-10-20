@@ -73,7 +73,6 @@ export const turnosService = {
     if (ocupados.length > 0) {
       throw new ReglaDeNegocioError("HORARIO_OCUPADO", "El horario ya está ocupado");
     }
-    await new Promise((resolve) => setTimeout(resolve, 500)); // TEMPORAL: agranda la ventana de la carrera
     const turno = await turnosRepository.crear({ profesionalId, clienteId, inicio, fin });
     if (!turno) {
       throw new ReglaDeNegocioError("HORARIO_OCUPADO", "El horario ya está ocupado");

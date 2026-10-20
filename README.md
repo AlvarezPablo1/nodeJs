@@ -1361,12 +1361,14 @@ if (!connectionString) {
   throw new Error("Falta la variable de entorno DATABASE_URL");
 }
 
-const adapter = new PrismaPg({ connectionString });
+// Sesión en UTC (ver la nota de abajo)
+const adapter = new PrismaPg({ connectionString, options: "-c timezone=UTC" });
 export const prisma = new PrismaClient({ adapter });
 ```
 
 - **Una sola instancia** para toda la app: cada `new PrismaClient()` abre sus propias conexiones.
 - **Fallar al arrancar** si falta `DATABASE_URL` es mejor que fallar en la primera petición con un error confuso.
+- **`options: "-c timezone=UTC"`** → pone la sesión de la API en UTC. El adapter manda las fechas en UTC **sin** zona horaria (`2026-10-21 15:30:00`), y como `compose.yaml` configura la base en hora argentina, Postgres las interpretaba como `-03` y las guardaba **3 horas corridas**. La API no lo notaba (al leer se corría al revés), pero cualquier consulta SQL con `now()` daba mal. `psql` sigue mostrando hora argentina, ahora con el valor correcto.
 
 ### 7) Seed: datos de prueba
 
@@ -1948,7 +1950,7 @@ cd api && npx tsx scripts/carrera.ts   # con la API levantada (npm run dev)
 ```
 
 - **Top-level await** → usar `await` fuera de una función `async`. Solo se puede en un **módulo** (un archivo con algún `import` o `export`); por eso el `export {}` vacío.
-- Para que la carrera se vea seguro, se puede agrandar la ventana con una pausa entre el chequeo y el `crear` (`await new Promise((r) => setTimeout(r, 500))`). Es **solo para la prueba**.
+- Para que la carrera se vea seguro, se puede agrandar la ventana con una pausa entre el chequeo y el `crear` (`await new Promise((r) => setTimeout(r, 500))`). Es **solo para la prueba**: hay que sacarla después, porque demora todas las reservas.
 - La fecha del script es fija: hay que cambiarla por un día hábil futuro y correr `npm run db:reset` entre prueba y prueba (si no, la segunda vez las dos dan `HORARIO_OCUPADO`).
 
 ### 5) La solución: una restricción de exclusión en Postgres

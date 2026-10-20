@@ -59,29 +59,29 @@ POST {{baseUrl}}/profesionales
 Content-Type: application/json
 
 {
-  "nombre": "Sofía Pérez",
+  "nombre": "Ana Torres",
   "especialidad": "Psicología",
-  "email": "sofia@turnero.com"
+  "email": "ana@turnero.com"
 }
 
 ### 2. Ver el recién creado
-GET {{baseUrl}}/profesionales/{{crear.response.body.id}}
+GET {{baseUrl}}/profesionales/{{crear.response.body.response.data.id}}
 
 ### 3. Actualizar el recién creado
-PUT {{baseUrl}}/profesionales/{{crear.response.body.id}}
+PUT {{baseUrl}}/profesionales/{{crear.response.body.response.data.id}}
 Content-Type: application/json
 
 {
-  "nombre": "Sofía Pérez",
+  "nombre": "Ana Torres",
   "especialidad": "Psicología Infantil",
-  "email": "sofia.perez@turnero.com"
+  "email": "ana.torres@turnero.com"
 }
 
-### 4. Eliminar el recién creado → 204
-DELETE {{baseUrl}}/profesionales/{{idLaura}}
+### 4. Eliminar el recién creado → 200, data null
+DELETE {{baseUrl}}/profesionales/{{crear.response.body.response.data.id}}
 
 ### 5. Verlo después de eliminado → 404
-GET {{baseUrl}}/profesionales/{{crear.response.body.id}}
+GET {{baseUrl}}/profesionales/{{crear.response.body.response.data.id}}
 
 # =========================================================
 # ===== Profesionales · Validaciones (todas → 400)
