@@ -15,6 +15,8 @@ model Profesional {
   especialidad String
   email        String              @unique
   creadoEn     DateTime            @default(now()) @map("creado_en") @db.Timestamptz(6)
+  usuarioId String?  @unique @map("usuario_id") @db.Uuid
+  usuario   Usuario? @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
   turnos       Turno[]
   horarios     HorarioDisponible[]
 
@@ -27,6 +29,8 @@ model Cliente {
   email    String   @unique
   telefono String?
   creadoEn DateTime @default(now()) @map("creado_en") @db.Timestamptz(6)
+  usuarioId String?  @unique @map("usuario_id") @db.Uuid
+  usuario   Usuario? @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
   turnos   Turno[]
 
   @@map("clientes")
@@ -67,4 +71,24 @@ model HorarioDisponible {
 
   @@unique([profesionalId, diaSemana, inicio])
   @@map("horarios_disponibles")
+}
+
+enum Rol {
+  admin
+  profesional
+  cliente
+
+  @@map("rol")
+}
+
+model Usuario {
+  id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String       @unique
+  passwordHash String       @map("password_hash")
+  rol          Rol
+  creadoEn     DateTime     @default(now()) @map("creado_en") @db.Timestamptz(6)
+  profesional  Profesional?
+  cliente      Cliente?
+
+  @@map("usuarios")
 }

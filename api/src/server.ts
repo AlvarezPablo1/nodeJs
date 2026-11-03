@@ -1,9 +1,8 @@
+import { env } from "./config/env.js";
 import { app } from "./app.js";
 
-//Sirve unicamete para levantar el servidor de la API, no para testearla. Para testearla se debe usar el archivo app.ts
+// Sirve únicamente para levantar el servidor de la API. Para testearla, se importa app.ts directamente.
 
-const PORT = 3000;
-
-app.listen(PORT, () => {
-  console.log(`API escuchando en http://localhost:${PORT}`);
+app.listen(env.PORT, () => {
+  console.log(`API escuchando en http://localhost:${env.PORT}`);
 });

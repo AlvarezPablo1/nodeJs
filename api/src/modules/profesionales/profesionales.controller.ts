@@ -44,7 +44,7 @@ export const profesionalesController = {
 },
 
   async estadisticas(req: Request<IdParams>, res: Response) {
-    responderOk(res, await turnosService.estadisticasDeProfesional(req.params.id));
-  },
+  responderOk(res, await turnosService.estadisticasDeProfesional(req.params.id, res.locals.usuario!));
+},
 
 };

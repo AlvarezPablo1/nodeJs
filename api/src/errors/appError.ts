@@ -30,3 +30,15 @@ export class ConflictError extends AppError {
     super(409, "CONFLICTO", mensaje);
   }
 }
+
+export class UnauthorizedError extends AppError {
+  constructor(mensaje = "Tenés que iniciar sesión") {
+    super(401, "NO_AUTENTICADO", mensaje);
+  }
+}
+
+export class ForbiddenError extends AppError {
+  constructor(mensaje = "No tenés permiso para realizar esta acción") {
+    super(403, "SIN_PERMISO", mensaje);
+  }
+}

@@ -1,4 +1,5 @@
 import { prisma } from "../src/lib/prisma.js";
+import argon2 from "argon2";
 
 function hoyMas(dias: number, horas: number, minutos = 0) {
   const fecha = new Date();
@@ -19,10 +20,21 @@ async function main() {
   await prisma.horarioDisponible.deleteMany();
   await prisma.cliente.deleteMany();
   await prisma.profesional.deleteMany();
+  await prisma.usuario.deleteMany();
+
+  const passwordHash = await argon2.hash("turnero123");
+
+  await prisma.usuario.createMany({
+    data: [
+      { id: "dddddddd-dddd-4ddd-8ddd-dddddddddd01", email: "admin@turnero.com", passwordHash, rol: "admin" },
+      { id: "dddddddd-dddd-4ddd-8ddd-dddddddddd02", email: "laura@turnero.com", passwordHash, rol: "profesional" },
+      { id: "dddddddd-dddd-4ddd-8ddd-dddddddddd03", email: "carlos@mail.com", passwordHash, rol: "cliente" },
+    ],
+  });
 
   await prisma.profesional.createMany({
     data: [
-      { id: "11111111-1111-4111-8111-111111111111", nombre: "Laura Gómez", especialidad: "Kinesiología", email: "laura@turnero.com" },
+      { id: "11111111-1111-4111-8111-111111111111", usuarioId: "dddddddd-dddd-4ddd-8ddd-dddddddddd02", nombre: "Laura Gómez", especialidad: "Kinesiología", email: "laura@turnero.com" },
       { id: "22222222-2222-4222-8222-222222222222", nombre: "Martín Ruiz", especialidad: "Nutrición", email: "martin@turnero.com" },
       { id: "33333333-3333-4333-8333-333333333333", nombre: "Sofía Pérez", especialidad: "Psicología", email: "sofia@turnero.com" },
     ],
@@ -30,7 +42,7 @@ async function main() {
 
   await prisma.cliente.createMany({
     data: [
-      { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", nombre: "Carlos Méndez", email: "carlos@mail.com", telefono: "223-555-0101" },
+      { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", usuarioId: "dddddddd-dddd-4ddd-8ddd-dddddddddd03", nombre: "Carlos Méndez", email: "carlos@mail.com", telefono: "223-555-0101" },
       { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", nombre: "Lucía Fernández", email: "lucia@mail.com" },
     ],
   });

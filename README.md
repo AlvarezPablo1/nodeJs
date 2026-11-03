@@ -25,6 +25,7 @@ turnero/
 | 6 | [Prisma ORM](#-lección-6--prisma-orm) | Conectar la API a PostgreSQL con Prisma 7: schema, migraciones, cliente, seed y repository asíncrono |
 | 7 | [Turnos, disponibilidad y respuestas uniformes](#-lección-7--turnos-disponibilidad-y-respuestas-uniformes) | Formato único de respuesta, códigos de error, `409` por email repetido, relaciones con `include`, paginación, índices, cálculo de horarios libres, orden y estadísticas |
 | 8 | [Reservar turnos y condiciones de carrera](#-lección-8--reservar-turnos-y-condiciones-de-carrera) | Reservar y reprogramar, reglas de negocio con `result: false`, condición de carrera, restricción de exclusión en Postgres y transacciones |
+| 9 | [Autenticación y autorización](#-lección-9--autenticación-y-autorización) | Variables de entorno validadas, usuarios y roles, contraseñas con argon2, JWT en header o cookie, middlewares `autenticar` y `autorizar`, y permisos por dueño del dato |
 
 ---
 
@@ -2045,6 +2046,369 @@ async reprogramar(id: string, nuevoInicio: Date, duracion?: number) {
 Suma los casos de reserva: turno libre (`201`), encima de otro turno (`HORARIO_OCUPADO`), fuera de horario (`FUERA_DE_HORARIO`), en el pasado (`TURNO_EN_EL_PASADO`), fecha sin zona horaria (`400`), duración que no es múltiplo de 15 (`400`) y cliente inexistente (`404`). También agrega las variables `@idCarlos` e `@idLucia`.
 
 > 🍽️ **Analogía:** dos mozos toman, al mismo tiempo, la reserva de la **misma mesa** para las 21 h. Los dos miran el cuaderno, la ven libre y la anotan. La solución no es pedirles que miren más rápido: es que haya **un solo cuaderno** que no deje escribir una reserva encima de otra (la restricción de la base). Y reprogramar es **tachar y anotar en un solo movimiento**: si la mesa nueva está tomada, la reserva vieja no se tacha (la transacción).
+
+---
+
+## 🔑 Lección 9 · Autenticación y autorización
+
+Hasta ahora cualquiera podía hacer cualquier cosa. Ahora la API sabe **quién** hace cada petición y **qué** le está permitido.
+
+- **Autenticación** (*authentication*) → ¿**quién sos**? Se resuelve con email + contraseña, y después con un token. Si falla → **`401 Unauthorized`**.
+- **Autorización** (*authorization*) → ¿**podés hacer esto**? Depende del rol y de a quién pertenece el dato. Si falla → **`403 Forbidden`**.
+
+### 1) Piezas nuevas
+
+```
+api/src/
+├── config/env.ts               → valida las variables de entorno al arrancar
+├── lib/
+│   ├── password.ts             → hashear y verificar contraseñas (argon2)
+│   └── jwt.ts                  → firmar y verificar tokens
+├── middlewares/
+│   ├── autenticar.ts           → lee el token → res.locals.usuario (o 401)
+│   └── autorizar.ts            → chequea el rol (o 403)
+├── types/express.d.ts          → le cuenta a TypeScript que existe res.locals.usuario
+└── modules/auth/               → registro, login, logout, yo
+```
+
+| Paquete | Para qué |
+|---------|----------|
+| `argon2` | Hashear contraseñas |
+| `jsonwebtoken` (+ `@types/jsonwebtoken`) | Crear y verificar JWT |
+| `cookie-parser` (+ `@types/cookie-parser`) | Leer las cookies de la petición en `req.cookies` |
+
+### 2) Variables de entorno validadas (`config/env.ts`)
+
+```ts
+const envSchema = z.object({
+  NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
+  PORT: z.coerce.number().int().default(3000),
+  DATABASE_URL: z.string().min(1, "Falta DATABASE_URL"),
+  JWT_SECRET: z.string().min(32, "JWT_SECRET tiene que tener al menos 32 caracteres"),
+  JWT_EXPIRA_EN_SEGUNDOS: z.coerce.number().int().positive().default(28800),
+});
+
+const resultado = envSchema.safeParse(process.env);
+
+if (!resultado.success) {
+  console.error("Variables de entorno inválidas:");
+  for (const issue of resultado.error.issues) {
+    console.error(`  - ${issue.path.join(".")}: ${issue.message}`);
+  }
+  process.exit(1);
+}
+
+export const env = resultado.data;
+```
+
+- **Zod también sirve para el `.env`**: el mismo patrón que con el body, pero una sola vez, al arrancar.
+- **`process.exit(1)`** → si falta algo, la API **no arranca** y dice exactamente qué falta. Mejor que descubrirlo en la primera petición.
+- **`env.PORT`** en vez de `process.env.PORT` → ya viene **convertido a número** y con tipo. `server.ts` y `lib/prisma.ts` ahora usan `env`.
+- **`.env.example`** suma `JWT_SECRET` y `JWT_EXPIRA_EN_SEGUNDOS`. El secreto real **nunca** va a Git: si alguien lo conoce, puede fabricar tokens válidos.
+
+### 3) Usuarios y roles (`schema.prisma`)
+
+```prisma
+enum Rol {
+  admin
+  profesional
+  cliente
+
+  @@map("rol")
+}
+
+model Usuario {
+  id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String       @unique
+  passwordHash String       @map("password_hash")
+  rol          Rol
+  creadoEn     DateTime     @default(now()) @map("creado_en") @db.Timestamptz(6)
+  profesional  Profesional?
+  cliente      Cliente?
+
+  @@map("usuarios")
+}
+
+model Profesional {
+  // ...
+  usuarioId String?  @unique @map("usuario_id") @db.Uuid
+  usuario   Usuario? @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+}
+```
+
+- **`Usuario`** es la **cuenta** (email, contraseña, rol). **`Profesional`** y **`Cliente`** son las **personas** del negocio. Se separan porque no todo cliente tiene cuenta (Lucía puede tener turnos cargados por Laura sin haberse registrado nunca).
+- **Relación uno a uno:** `usuarioId` es opcional (`?`) y **`@unique`** → un usuario se vincula, como mucho, con un profesional o un cliente.
+- **`onDelete: SetNull`** → si se borra la cuenta, la persona y sus turnos **siguen existiendo**; solo pierde el vínculo.
+- **Seed:** tres usuarios con la contraseña `turnero123`: `admin@turnero.com` (admin), `laura@turnero.com` (vinculada a Laura) y `carlos@mail.com` (vinculado a Carlos).
+
+### 4) Contraseñas: nunca en texto plano (`lib/password.ts`)
+
+```ts
+import argon2 from "argon2";
+
+export function hashearPassword(password: string) {
+  return argon2.hash(password);
+}
+
+export function verificarPassword(hash: string, password: string) {
+  return argon2.verify(hash, password);
+}
+```
+
+- Un **hash** es una transformación de **una sola vía**: de `turnero123` se obtiene `$argon2id$v=19$...`, pero del hash no se puede volver a la contraseña. Para el login no hace falta "desencriptar": se hashea lo que escribió el usuario y se compara.
+- Si alguien roba la base, **no ve las contraseñas**.
+- **argon2** es **lento a propósito** y agrega una **sal** (*salt*) aleatoria: dos usuarios con la misma contraseña tienen hashes distintos, y probar millones de contraseñas por segundo se vuelve impracticable. Por eso **no** se usa algo rápido como `sha256`.
+
+### 5) JWT: el token de sesión (`lib/jwt.ts`)
+
+Un **JWT** (*JSON Web Token*) es un texto con tres partes separadas por puntos: `cabecera.datos.firma`.
+
+```ts
+const payloadSchema = z.object({
+  sub: z.uuid(),                                  // "subject": el id del usuario
+  rol: z.enum(["admin", "profesional", "cliente"]),
+  profesionalId: z.uuid().nullable(),
+  clienteId: z.uuid().nullable(),
+});
+
+export type UsuarioAutenticado = z.infer<typeof payloadSchema>;
+
+export function firmarToken(usuario: UsuarioAutenticado) {
+  return jwt.sign(usuario, env.JWT_SECRET, { expiresIn: env.JWT_EXPIRA_EN_SEGUNDOS });
+}
+
+export function verificarToken(token: string): UsuarioAutenticado | null {
+  try {
+    const payload = jwt.verify(token, env.JWT_SECRET);
+    const resultado = payloadSchema.safeParse(payload);
+    return resultado.success ? resultado.data : null;
+  } catch {
+    return null; // firma inválida, token vencido o mal formado
+  }
+}
+```
+
+- **La firma** se calcula con `JWT_SECRET`. Si alguien cambia un dato (por ejemplo `"rol": "admin"`), la firma deja de coincidir y `jwt.verify` lo rechaza.
+- **Los datos NO están encriptados**: cualquiera puede leerlos (están en base64). Nunca se pone información secreta adentro, como la contraseña.
+- **`expiresIn`** → el token vence solo (8 horas por defecto).
+- **Sin estado** (*stateless*): el servidor no guarda las sesiones. Le alcanza con verificar la firma, y con el `rol`, `profesionalId` y `clienteId` que vienen adentro ya sabe qué puede hacer cada uno **sin consultar la base**.
+- **Validar el payload con Zod** → aunque la firma sea válida, se confirma que tenga la forma esperada antes de confiar en él.
+
+### 6) Módulo `auth`
+
+| Endpoint | Qué hace | Respuesta |
+|----------|----------|-----------|
+| `POST /auth/registro` | Crea una cuenta de cliente | `201` con el usuario (sin hash) |
+| `POST /auth/login` | Verifica email y contraseña, devuelve el token y setea la cookie | `200` con `{ token, usuario }` |
+| `POST /auth/logout` | Borra la cookie | `200` |
+| `GET /auth/yo` | Devuelve el usuario de la sesión actual | `200`, o `401` sin token |
+
+```ts
+// auth.schema.ts
+const emailSchema = z.string().trim().toLowerCase().pipe(z.email("El email no es válido"));
+```
+
+- **`.toLowerCase()` + `.pipe(...)`** → primero normaliza (`Ana.Torres@Mail.com` → `ana.torres@mail.com`) y **después** valida. Así no se pueden crear dos cuentas con el mismo email en distintas mayúsculas.
+
+**Login:**
+
+```ts
+async login(datos: LoginInput) {
+  const usuario = await authRepository.buscarPorEmailConPassword(datos.email);
+  const passwordValida = usuario ? await verificarPassword(usuario.passwordHash, datos.password) : false;
+
+  if (!usuario || !passwordValida) {
+    throw new ReglaDeNegocioError("CREDENCIALES_INVALIDAS", "Email o contraseña incorrectos");
+  }
+
+  const token = firmarToken({
+    sub: usuario.id,
+    rol: usuario.rol,
+    profesionalId: usuario.profesional?.id ?? null,
+    clienteId: usuario.cliente?.id ?? null,
+  });
+
+  return { token, usuario: { id: usuario.id, email: usuario.email, rol: usuario.rol } };
+},
+```
+
+- **El mismo mensaje** para "el email no existe" y "la contraseña está mal". Si fueran distintos, un atacante podría averiguar qué emails tienen cuenta.
+- **Nunca se devuelve el `passwordHash`**: el repository usa un `select` (`usuarioPublico`) con solo los campos seguros.
+
+**Registro, con tres caminos:**
+
+1. El email ya tiene **cuenta** → `EMAIL_EN_USO`.
+2. Existe un **cliente sin cuenta** con ese email (por ejemplo, Lucía, a quien Laura le cargó turnos) → se crea el usuario y se **vincula** con `connect`.
+3. No existe → se crean **usuario y cliente juntos** con un `create` anidado.
+
+```ts
+// Camino 3: Prisma crea las dos filas en una sola operación
+prisma.usuario.create({
+  data: {
+    email, passwordHash, rol: "cliente",
+    cliente: { create: { nombre, email, telefono } }, // camino 2: cliente: { connect: { id } }
+  },
+  select: usuarioPublico,
+});
+```
+
+- **`create` anidado** → Prisma inserta el usuario, después el cliente con su `usuario_id`, y todo dentro de una transacción.
+- **`P2002` → `null` → `EMAIL_EN_USO`**: si dos registros con el mismo email llegan a la vez, el `@unique` de la base frena al segundo (la misma idea que la Lección 8).
+- ⚠️ El camino 2 tiene un `TODO`: antes de vincular, habría que **verificar que la persona es dueña del email** (por ejemplo, mandándole un link). Si no, cualquiera que sepa el email de Lucía podría quedarse con sus turnos.
+
+### 7) Header `Authorization` o cookie
+
+```ts
+// auth.controller.ts
+const opcionesCookie = {
+  httpOnly: true,                          // JavaScript del navegador no la puede leer
+  secure: env.NODE_ENV === "production",   // en producción, solo por HTTPS
+  sameSite: "lax" as const,                // no se manda desde formularios de otros sitios
+  maxAge: env.JWT_EXPIRA_EN_SEGUNDOS * 1000,
+};
+
+res.cookie(NOMBRE_COOKIE, token, opcionesCookie);
+```
+
+El login devuelve el token **en el body** y además lo deja en una **cookie**. Así sirven las dos formas de usar la API:
+
+| Forma | Quién la usa | Cómo se manda |
+|-------|--------------|---------------|
+| Header `Authorization: Bearer <token>` | Apps móviles, otros servidores, `requests.http` | El cliente guarda el token y lo agrega en cada petición |
+| Cookie `turnero_token` | El frontend web | El navegador la manda **solo**, en cada petición al mismo sitio |
+
+- **`httpOnly`** protege el token de un ataque **XSS**: aunque alguien logre meter JavaScript en la página, no puede leer la cookie.
+- **`sameSite: "lax"`** ayuda contra **CSRF**: que otro sitio dispare peticiones usando tu sesión.
+- **`maxAge`** va en **milisegundos**; por eso `* 1000`.
+- **Logout** → `res.clearCookie(...)` con las mismas opciones. Con un JWT, el token **sigue siendo válido hasta que vence**: el logout solo borra la cookie del navegador.
+
+### 8) Middleware `autenticar`
+
+```ts
+export function autenticar(req: Request, res: Response, next: NextFunction) {
+  const header = req.get("authorization");
+  const token = header?.startsWith("Bearer ") ? header.slice(7) : req.cookies?.[NOMBRE_COOKIE];
+
+  if (!token) throw new UnauthorizedError();
+
+  const usuario = verificarToken(token);
+  if (!usuario) throw new UnauthorizedError("La sesión es inválida o expiró");
+
+  res.locals.usuario = usuario; // las capas siguientes saben quién es
+  next();
+}
+```
+
+- Primero busca el header; si no hay, la cookie. **`header.slice(7)`** saca el `"Bearer "` (7 caracteres).
+- **`res.locals.usuario`** → el mismo lugar donde `validar` deja el query (Lección 3): datos que viajan entre middlewares durante **una** petición.
+- **`types/express.d.ts`** amplía el tipo de `res.locals` para que TypeScript sepa que existe `usuario`:
+
+```ts
+declare global {
+  namespace Express {
+    interface Locals {
+      usuario?: UsuarioAutenticado;
+    }
+  }
+}
+```
+
+- **`declare global`** + **`interface`** → TypeScript **fusiona** esta declaración con la de Express (*declaration merging*). Es opcional (`?`) porque en las rutas públicas no hay usuario.
+- **`res.locals.usuario!`** → en el controller se usa `!` (*non-null assertion*): "confiá, acá seguro existe", porque la ruta pasó por `autenticar`.
+- Nuevo error: **`UnauthorizedError`** → `401`, `codigo: "NO_AUTENTICADO"`.
+
+### 9) Middleware `autorizar`: permisos por rol
+
+```ts
+export function autorizar(...rolesPermitidos: UsuarioAutenticado["rol"][]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const usuario = res.locals.usuario;
+    if (!usuario) throw new UnauthorizedError();
+    if (!rolesPermitidos.includes(usuario.rol)) throw new ForbiddenError();
+    next();
+  };
+}
+```
+
+- **Función que devuelve un middleware**, igual que `validar(...)`: se configura en cada ruta.
+- **`...rolesPermitidos`** (*rest parameter*) → junta todos los argumentos en un array: `autorizar("admin", "profesional")`.
+- **`UsuarioAutenticado["rol"]`** → el tipo de la propiedad `rol` (`"admin" | "profesional" | "cliente"`). Un typo como `autorizar("admn")` no compila.
+- Nuevo error: **`ForbiddenError`** → `403`, `codigo: "SIN_PERMISO"`.
+
+**Cómo quedan las rutas:**
+
+```ts
+// turnos.routes.ts → todo el router requiere sesión
+turnosRouter.use(autenticar);
+
+// profesionales.routes.ts → leer es público; modificar, solo admin
+profesionalesRouter.get("/", validar(...), profesionalesController.listar);
+profesionalesRouter.post("/", autenticar, autorizar("admin"), validar({ body: profesionalSchema }), profesionalesController.crear);
+profesionalesRouter.get("/:id/estadisticas", autenticar, autorizar("admin", "profesional"), validar(...), profesionalesController.estadisticas);
+```
+
+| Ruta | Sin sesión | cliente | profesional | admin |
+|------|-----------|---------|-------------|-------|
+| `GET /profesionales`, `/:id`, `/:id/disponibilidad` | ✅ | ✅ | ✅ | ✅ |
+| `POST`, `PUT`, `DELETE /profesionales` | `401` | `403` | `403` | ✅ |
+| `GET /profesionales/:id/estadisticas` | `401` | `403` | solo las suyas | ✅ |
+| `/turnos` (todo) | `401` | solo los suyos | solo su agenda | ✅ todos |
+
+- **`router.use(autenticar)`** → aplica el middleware a **todas** las rutas de ese router, sin repetirlo en cada una.
+- **El orden importa:** `autenticar` → `autorizar` → `validar` → controller. Primero se sabe quién es, después si puede, y recién ahí se validan los datos.
+
+### 10) Permisos por dueño del dato (en el service)
+
+El rol no alcanza: un cliente **puede** ver turnos, pero **solo los suyos**. Esa regla necesita datos, así que va en el **service**:
+
+```ts
+type Alcance = { clienteId?: string; profesionalId?: string };
+
+function alcanceDe(usuario: UsuarioAutenticado): Alcance {
+  if (usuario.rol === "admin") return {};                                                     // todo
+  if (usuario.rol === "profesional" && usuario.profesionalId) return { profesionalId: usuario.profesionalId };
+  if (usuario.rol === "cliente" && usuario.clienteId) return { clienteId: usuario.clienteId };
+  throw new ForbiddenError("Tu cuenta no está vinculada a un profesional ni a un cliente");
+}
+
+// listar: el alcance se suma a los filtros, DESPUÉS de los del query
+turnosRepository.listar({ ...filtros, ...alcanceDe(usuario) }, pagina, porPagina);
+```
+
+- **`{ ...filtros, ...alcanceDe(usuario) }`** → con el *spread*, si una clave se repite **gana la de la derecha**. Si Carlos pide `?clienteId=<id de Lucía>`, su propio `clienteId` pisa el del query: **igual ve solo los suyos**.
+- **`obtenerPara(id, usuario)`** → busca el turno y, si no le pertenece, responde **`404`** (no `403`). Así no se revela que ese turno existe.
+- **`reservar`** (`resolverClienteId`):
+  - **cliente** → el `clienteId` sale **del token**; puede omitirlo en el body. Si manda el de otra persona → `403`.
+  - **profesional** → solo en **su propia agenda** (`403` si no), y tiene que indicar el `clienteId`.
+  - **admin** → cualquier agenda, indicando el `clienteId` (`400` si falta).
+- **`reprogramar`** usa `obtenerPara`: solo se puede reprogramar un turno propio.
+- **`estadisticasDeProfesional`** → un profesional solo ve **las suyas** (`403` si pide las de otro).
+- **`GET /turnos`** ahora devuelve la paginación agrupada en `meta.paginacion` (antes iba suelta en `meta`).
+
+> **Regla general:** el **rol** se chequea en las **routes** (`autorizar`), porque alcanza con mirar el token. El **dueño del dato** se chequea en el **service**, porque hay que mirar los datos. Es la misma división que formato (routes) y negocio (service) de la Lección 4.
+
+### 11) Probarlo con `requests.http`
+
+La sección **Logins** va primero y guarda los tokens en variables, que después usan las demás peticiones:
+
+```http
+### Login Carlos (cliente)
+# @name loginCarlos
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "carlos@mail.com", "password": "turnero123" }
+
+@tokenCarlos = {{loginCarlos.response.body.response.data.token}}
+
+### Carlos lista turnos → solo los suyos
+GET {{baseUrl}}/turnos
+Authorization: Bearer {{tokenCarlos}}
+```
+
+- Las secciones **Permisos** y **Autenticación** cubren todos los casos de las tablas de arriba: `401` sin token o con token inventado, `403` por rol o por dueño, credenciales inválidas, registro con email repetido (en otras mayúsculas) y logout.
+
+> 🍽️ **Analogía:** el **login** es la recepción del hotel: muestra el documento (email + contraseña) y te dan una **tarjeta magnética** (el JWT) que vence al irte. **`autenticar`** es el lector de la puerta: sin tarjeta válida no pasás (`401`). **`autorizar`** decide **a qué pisos** te deja ir según tu tipo de tarjeta: huésped, personal o gerente (`403`). Y aunque seas huésped, la tarjeta **solo abre tu habitación** (el dueño del dato, en el service).
 
 ---
 

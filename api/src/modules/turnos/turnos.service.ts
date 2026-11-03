@@ -1,4 +1,5 @@
-import { NotFoundError, ReglaDeNegocioError } from "../../errors/appError.js";
+import { AppError, ForbiddenError, NotFoundError, ReglaDeNegocioError } from "../../errors/appError.js";
+import { UsuarioAutenticado } from "../../lib/jwt.js";
 import { prisma } from "../../lib/prisma.js";
 import { clientesRepository } from "../clientes/clientes.repository.js";
 import { horariosRepository } from "../horarios/horarios.repository.js";
@@ -6,8 +7,33 @@ import { profesionalesService } from "../profesionales/profesionales.service.js"
 import { turnosRepository } from "./turnos.repository.js";
 import type { ListarTurnosQuery, ReservarTurnoInput } from "./turnos.schema.js";
 
+type Alcance = { clienteId?: string; profesionalId?: string };
+
+  
 function minutosDelDia(hora: Date) {
   return hora.getUTCHours() * 60 + hora.getUTCMinutes();
+}
+
+function resolverClienteId(usuario: UsuarioAutenticado, datos: ReservarTurnoInput): string {
+  if (usuario.rol === "cliente") {
+    if (!usuario.clienteId) {
+      throw new ForbiddenError("Tu cuenta no está vinculada a un cliente");
+    }
+    if (datos.clienteId && datos.clienteId !== usuario.clienteId) {
+      throw new ForbiddenError("No podés reservar turnos a nombre de otra persona");
+    }
+    return usuario.clienteId;
+  }
+
+  if (usuario.rol === "profesional" && datos.profesionalId !== usuario.profesionalId) {
+    throw new ForbiddenError("Solo podés reservar turnos en tu propia agenda");
+  }
+
+  if (!datos.clienteId) {
+    throw new AppError(400, "DATOS_INVALIDOS", "Tenés que indicar el clienteId");
+  }
+
+  return datos.clienteId;
 }
 
 async function verificarReglasDeHorario(profesionalId: string, inicio: Date, fin: Date) {
@@ -28,10 +54,28 @@ async function verificarReglasDeHorario(profesionalId: string, inicio: Date, fin
   }
 }
 
+function alcanceDe(usuario: UsuarioAutenticado): Alcance {
+  if (usuario.rol === "admin") return {};
+  if (usuario.rol === "profesional" && usuario.profesionalId) return { profesionalId: usuario.profesionalId };
+  if (usuario.rol === "cliente" && usuario.clienteId) return { clienteId: usuario.clienteId };
+
+  throw new ForbiddenError("Tu cuenta no está vinculada a un profesional ni a un cliente");
+}
+
+function puedeAcceder(usuario: UsuarioAutenticado, turno: { profesionalId: string; clienteId: string }) {
+  const alcance = alcanceDe(usuario);
+
+  return (
+    (!alcance.profesionalId || turno.profesionalId === alcance.profesionalId) &&
+    (!alcance.clienteId || turno.clienteId === alcance.clienteId)
+  );
+}
+
 export const turnosService = {
 
-  async reprogramar(id: string, nuevoInicio: Date, duracion?: number) {
-    const actual = await turnosService.obtener(id);
+  async reprogramar(id: string, usuario: UsuarioAutenticado, nuevoInicio: Date, duracion?: number) {
+  const actual = await turnosService.obtenerPara(id, usuario);
+
 
     if (actual.estado !== "confirmado") {
       throw new ReglaDeNegocioError("TURNO_NO_REPROGRAMABLE", "Solo se pueden reprogramar turnos confirmados");
@@ -58,15 +102,16 @@ export const turnosService = {
     });
   },
 
-  async reservar(datos: ReservarTurnoInput) {
-    const { profesionalId, clienteId, inicio, duracion } = datos;
+  async reservar(datos: ReservarTurnoInput, usuario: UsuarioAutenticado) {
+    const clienteId = resolverClienteId(usuario, datos);
+    const { profesionalId, inicio, duracion } = datos;
     const fin = new Date(inicio.getTime() + duracion * 60_000);
 
     await profesionalesService.obtener(profesionalId);
 
     const cliente = await clientesRepository.buscarPorId(clienteId);
     if (!cliente) throw new NotFoundError("Cliente");
-
+    
     await verificarReglasDeHorario(profesionalId, inicio, fin);
 
     const ocupados = await turnosRepository.listarOcupados(profesionalId, inicio, fin);
@@ -81,14 +126,24 @@ export const turnosService = {
     return turno;
   },
   
-  async listar(query: ListarTurnosQuery) {
-    const { pagina, porPagina, ...filtros } = query;
-    const [turnos, total] = await turnosRepository.listar(filtros, pagina, porPagina);
+  async listar(query: ListarTurnosQuery, usuario: UsuarioAutenticado) {
+  const { pagina, porPagina, ...filtros } = query;
+  const [turnos, total] = await turnosRepository.listar({ ...filtros, ...alcanceDe(usuario) }, pagina, porPagina);
 
-    return {
-      turnos,
-      paginacion: { pagina, porPagina, total, totalPaginas: Math.ceil(total / porPagina) },
-    };
+  return {
+    turnos,
+    paginacion: { pagina, porPagina, total, totalPaginas: Math.ceil(total / porPagina) },
+  };
+},
+
+  async obtenerPara(id: string, usuario: UsuarioAutenticado) {
+    const turno = await turnosService.obtener(id);
+
+    if (!puedeAcceder(usuario, turno)) {
+      throw new NotFoundError("Turno");
+    }
+
+    return turno;
   },
 
   async obtener(id: string) {
@@ -131,8 +186,13 @@ export const turnosService = {
     return { libres, atiende: horarios.length > 0 };
   },
 
-  async estadisticasDeProfesional(profesionalId: string) {
-    await profesionalesService.obtener(profesionalId);
+ async estadisticasDeProfesional(profesionalId: string, usuario: UsuarioAutenticado) {
+  if (usuario.rol === "profesional" && usuario.profesionalId !== profesionalId) {
+    throw new ForbiddenError("Solo podés ver tus propias estadísticas");
+  }
+
+  await profesionalesService.obtener(profesionalId);
+  // ...el resto queda igual
 
     const grupos = await turnosRepository.contarPorEstado(profesionalId);
 

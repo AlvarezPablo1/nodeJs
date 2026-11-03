@@ -5,6 +5,132 @@
 @idLucia = bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
 @idInexistente = 99999999-9999-4999-8999-999999999999
 
+
+# =========================================================
+# ===== Logins (ejecutar primero)
+# =========================================================
+
+### Login admin
+# @name loginAdmin
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "admin@turnero.com", "password": "turnero123" }
+
+### Login Laura (profesional)
+# @name loginLaura
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "laura@turnero.com", "password": "turnero123" }
+
+### Login Carlos (cliente)
+# @name loginCarlos
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{ "email": "carlos@mail.com", "password": "turnero123" }
+
+@tokenAdmin = {{loginAdmin.response.body.response.data.token}}
+@tokenLaura = {{loginLaura.response.body.response.data.token}}
+@tokenCarlos = {{loginCarlos.response.body.response.data.token}}
+
+# =========================================================
+# ===== Permisos
+# =========================================================
+
+### Carlos lista turnos → solo los suyos (con Laura y con Martín)
+GET {{baseUrl}}/turnos
+Authorization: Bearer {{tokenCarlos}}
+
+### Carlos intenta ver los de Lucía con un filtro → igual solo ve los suyos
+GET {{baseUrl}}/turnos?clienteId={{idLucia}}
+Authorization: Bearer {{tokenCarlos}}
+
+### Laura lista turnos → solo los de su agenda (Carlos y Lucía, no el de Martín)
+GET {{baseUrl}}/turnos
+Authorization: Bearer {{tokenLaura}}
+
+### Admin lista turnos → todos
+GET {{baseUrl}}/turnos
+Authorization: Bearer {{tokenAdmin}}
+
+### Carlos reserva sin mandar clienteId → 201, a su nombre
+POST {{baseUrl}}/turnos
+Authorization: Bearer {{tokenCarlos}}
+Content-Type: application/json
+
+{
+  "profesionalId": "{{idLaura}}",
+  "inicio": "2026-10-27T12:00:00-03:00",
+  "duracion": 30
+}
+
+### Carlos intenta reservar a nombre de Lucía → 403
+POST {{baseUrl}}/turnos
+Authorization: Bearer {{tokenCarlos}}
+Content-Type: application/json
+
+{
+  "profesionalId": "{{idLaura}}",
+  "clienteId": "{{idLucia}}",
+  "inicio": "2026-10-27T12:30:00-03:00",
+  "duracion": 30
+}
+
+### Laura le carga un turno a Lucía en su agenda → 201
+POST {{baseUrl}}/turnos
+Authorization: Bearer {{tokenLaura}}
+Content-Type: application/json
+
+{
+  "profesionalId": "{{idLaura}}",
+  "clienteId": "{{idLucia}}",
+  "inicio": "2026-10-27T09:00:00-03:00",
+  "duracion": 30
+}
+
+### Laura intenta cargar un turno en la agenda de Martín → 403
+POST {{baseUrl}}/turnos
+Authorization: Bearer {{tokenLaura}}
+Content-Type: application/json
+
+{
+  "profesionalId": "{{idMartin}}",
+  "clienteId": "{{idLucia}}",
+  "inicio": "2026-10-27T15:00:00-03:00",
+  "duracion": 30
+}
+
+### Carlos intenta crear un profesional → 403
+POST {{baseUrl}}/profesionales
+Authorization: Bearer {{tokenCarlos}}
+Content-Type: application/json
+
+{ "nombre": "Nuevo", "especialidad": "Odontología", "email": "nuevo@turnero.com" }
+
+### Admin crea un profesional → 201
+POST {{baseUrl}}/profesionales
+Authorization: Bearer {{tokenAdmin}}
+Content-Type: application/json
+
+{ "nombre": "Nuevo", "especialidad": "Odontología", "email": "nuevo@turnero.com" }
+
+### Laura ve sus estadísticas → 200
+GET {{baseUrl}}/profesionales/{{idLaura}}/estadisticas
+Authorization: Bearer {{tokenLaura}}
+
+### Laura intenta ver las de Martín → 403
+GET {{baseUrl}}/profesionales/{{idMartin}}/estadisticas
+Authorization: Bearer {{tokenLaura}}
+
+### Carlos intenta ver estadísticas → 403 (por rol)
+GET {{baseUrl}}/profesionales/{{idLaura}}/estadisticas
+Authorization: Bearer {{tokenCarlos}}
+
+### Profesionales sigue siendo público → 200 sin token
+GET {{baseUrl}}/profesionales
+
 # =========================================================
 # ===== Utilidades (funcionan cuando termines el ejercicio 1)
 # =========================================================
@@ -282,6 +408,72 @@ Content-Type: application/json
   "inicio": "2026-10-20T12:00:00-03:00",
   "duracion": 30
 }
+
+# =========================================================
+# ===== Autenticación
+# =========================================================
+
+### Login como Carlos (cliente)
+# @name loginCarlos
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "carlos@mail.com",
+  "password": "turnero123"
+}
+
+### Quién soy, con el token de Carlos
+GET {{baseUrl}}/auth/yo
+Authorization: Bearer {{loginCarlos.response.body.response.data.token}}
+
+### Login con contraseña incorrecta → 200, result false, CREDENCIALES_INVALIDAS
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "carlos@mail.com",
+  "password": "otra-cosa"
+}
+
+### Login con email que no existe → mismo mensaje que el anterior
+POST {{baseUrl}}/auth/login
+Content-Type: application/json
+
+{
+  "email": "nadie@mail.com",
+  "password": "turnero123"
+}
+
+### Registro de un cliente nuevo → 201
+POST {{baseUrl}}/auth/registro
+Content-Type: application/json
+
+{
+  "nombre": "Ana Torres",
+  "email": "Ana.Torres@Mail.com",
+  "password": "unaClaveSegura123"
+}
+
+### Registro con el mismo email (en otras mayúsculas) → 200, result false, EMAIL_EN_USO
+POST {{baseUrl}}/auth/registro
+Content-Type: application/json
+
+{
+  "nombre": "Ana Repetida",
+  "email": "ana.torres@mail.com",
+  "password": "unaClaveSegura123"
+}
+
+### Logout (borra la cookie)
+POST {{baseUrl}}/auth/logout
+
+### Quién soy, sin token → 401
+GET {{baseUrl}}/auth/yo
+
+### Token inventado → 401
+GET {{baseUrl}}/auth/yo
+Authorization: Bearer esto.no.es-un-token
 
 # =========================================================
 # ===== Rutas inexistentes

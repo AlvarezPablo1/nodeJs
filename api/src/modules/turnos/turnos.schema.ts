@@ -32,7 +32,7 @@ export const listarTurnosQuerySchema = z.object({
 
 export const reservarTurnoSchema = z.object({
   profesionalId: z.uuid("El profesionalId tiene que ser un UUID válido"),
-  clienteId: z.uuid("El clienteId tiene que ser un UUID válido"),
+  clienteId: z.uuid("El clienteId tiene que ser un UUID válido").optional(),
   inicio: fechaHoraSchema,
   duracion: duracionSchema.default(30),
 });
