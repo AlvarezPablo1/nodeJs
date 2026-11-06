@@ -7,7 +7,7 @@ import type { LoginInput, RegistroInput } from "./auth.schema.js";
 export const authService = {
   async registrar(datos: RegistroInput) {
   const clienteExistente = await authRepository.buscarClientePorEmail(datos.email);
-
+  
   // Camino 1: el cliente ya tiene cuenta
   if (clienteExistente?.usuarioId) {
     throw new ReglaDeNegocioError("EMAIL_EN_USO", "Ya existe una cuenta con ese email");
@@ -39,8 +39,12 @@ export const authService = {
 },
 
   async login(datos: LoginInput) {
+    // Hash de una contraseña que no pertenece a nadie. Se usa para que el login
+    // tarde lo mismo exista o no el usuario, y no revele qué emails tienen cuenta.
+    const hashFalso = hashearPassword("contraseña-que-no-pertenece-a-nadie");
     const usuario = await authRepository.buscarPorEmailConPassword(datos.email);
-    const passwordValida = usuario ? await verificarPassword(usuario.passwordHash, datos.password) : false;
+    const hashAComparar = usuario?.passwordHash ?? (await hashFalso);
+    const passwordValida = await verificarPassword(hashAComparar, datos.password);
 
     if (!usuario || !passwordValida) {
       throw new ReglaDeNegocioError("CREDENCIALES_INVALIDAS", "Email o contraseña incorrectos");

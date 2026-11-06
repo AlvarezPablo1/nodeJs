@@ -26,6 +26,7 @@ turnero/
 | 7 | [Turnos, disponibilidad y respuestas uniformes](#-lección-7--turnos-disponibilidad-y-respuestas-uniformes) | Formato único de respuesta, códigos de error, `409` por email repetido, relaciones con `include`, paginación, índices, cálculo de horarios libres, orden y estadísticas |
 | 8 | [Reservar turnos y condiciones de carrera](#-lección-8--reservar-turnos-y-condiciones-de-carrera) | Reservar y reprogramar, reglas de negocio con `result: false`, condición de carrera, restricción de exclusión en Postgres y transacciones |
 | 9 | [Autenticación y autorización](#-lección-9--autenticación-y-autorización) | Variables de entorno validadas, usuarios y roles, contraseñas con argon2, JWT en header o cookie, middlewares `autenticar` y `autorizar`, y permisos por dueño del dato |
+| 10 | [Seguridad de la API](#-lección-10--seguridad-de-la-api) | Cabeceras con helmet, CORS, límite de solicitudes, límite de tamaño del body y login que tarda lo mismo exista o no el usuario |
 
 ---
 
@@ -2412,7 +2413,154 @@ Authorization: Bearer {{tokenCarlos}}
 
 ---
 
+## 🚦 Lección 10 · Seguridad de la API
+
+La API ya sabe quién es cada usuario. Ahora se protege de lo que llega **antes** de esa verificación: otros sitios, demasiadas peticiones, bodies enormes o alguien probando contraseñas.
+
+### 1) El orden de los middlewares
+
+```ts
+// app.ts
+app.use(helmet());                                                    // 1. cabeceras de seguridad
+app.use(cors({ origin: env.CORS_ORIGINS, credentials: true }));       // 2. quién puede llamar desde un navegador
+app.use(limiteGeneral);                                               // 3. cuántas peticiones
+app.use(express.json({ limit: "100kb" }));                            // 4. leer el body, con tope de tamaño
+app.use(cookieParser());                                              // 5. leer las cookies
+app.use(logger);
+```
+
+- **Lo más barato y lo que rechaza antes va primero.** No tiene sentido leer un body de quien ya superó el límite de peticiones.
+
+| Paquete | Para qué |
+|---------|----------|
+| `helmet` | Agrega cabeceras HTTP de seguridad |
+| `cors` (+ `@types/cors`) | Indica qué orígenes pueden llamar a la API desde un navegador |
+| `express-rate-limit` | Limita cuántas peticiones puede hacer cada IP |
+
+### 2) `helmet`: cabeceras de seguridad
+
+Con una línea, cada respuesta lleva cabeceras que le indican al navegador cómo protegerse:
+
+| Cabecera | Qué hace |
+|----------|----------|
+| `Content-Security-Policy` | Limita desde dónde se pueden cargar scripts y otros recursos |
+| `Strict-Transport-Security` | Le pide al navegador que use siempre HTTPS |
+| `X-Content-Type-Options: nosniff` | Evita que el navegador adivine el tipo de un archivo |
+
+- También saca **`X-Powered-By`**, así que `app.disable("x-powered-by")` de la Lección 3 ya no hace falta.
+
+### 3) CORS: qué sitios pueden llamar a la API
+
+**CORS** (*Cross-Origin Resource Sharing*) es la regla del navegador que decide si una página puede leer la respuesta de **otro origen**. Un origen es protocolo + dominio + puerto: `http://localhost:5173` (el frontend) y `http://localhost:3000` (la API) son orígenes **distintos**.
+
+```ts
+// config/env.ts: de "a.com, b.com" a ["a.com", "b.com"]
+CORS_ORIGINS: z
+  .string()
+  .default("http://localhost:5173")
+  .transform((valor) => valor.split(",").map((origen) => origen.trim())),
+```
+
+- **`origin`** → la lista de orígenes permitidos. Si coincide, la respuesta lleva `Access-Control-Allow-Origin` y el navegador deja leerla.
+- **`credentials: true`** → permite que el navegador mande la **cookie** de sesión (Lección 9).
+- ⚠️ **CORS lo aplica el navegador, no el servidor.** Probando con `curl` desde `https://malo.com`, la API igual responde `200`, solo que sin `Access-Control-Allow-Origin`: un navegador no dejaría leer esa respuesta, pero `curl` o Postman no hacen ese chequeo. No reemplaza a `autenticar`.
+
+### 4) Límite de solicitudes (*rate limit*)
+
+```ts
+// middlewares/limiteDeSolicitudes.ts
+function crearLimite(opciones: { ventanaMinutos: number; maximo: number; mensaje: string }) {
+  return rateLimit({
+    windowMs: opciones.ventanaMinutos * 60 * 1000,
+    limit: opciones.maximo,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    handler: (req, res) => {
+      responderError(res, 429, { description: opciones.mensaje, codigo: "DEMASIADAS_SOLICITUDES" });
+    },
+  });
+}
+
+export const limiteGeneral = crearLimite({ ventanaMinutos: 15, maximo: 300, mensaje: "..." });
+export const limiteAutenticacion = crearLimite({ ventanaMinutos: 15, maximo: 10, mensaje: "..." });
+```
+
+| Límite | Dónde se aplica | Máximo por IP | Contra qué protege |
+|--------|-----------------|---------------|--------------------|
+| `limiteGeneral` | Toda la API (`app.use`) | 300 cada 15 minutos | Abuso y exceso de tráfico |
+| `limiteAutenticacion` | Solo `/auth/login` y `/auth/registro` | 10 cada 15 minutos | Probar muchas contraseñas (**fuerza bruta**) |
+
+```ts
+// auth.routes.ts: se suma como un middleware más, antes de validar
+authRouter.post("/login", limiteAutenticacion, validar({ body: loginSchema }), authController.login);
+```
+
+- **`429 Too Many Requests`** → el status para "demasiadas peticiones". `handler` hace que respete el formato `{ meta, response, error }`.
+- **`crearLimite`** → una función que arma el middleware, igual que `validar` y `autorizar`.
+- **`standardHeaders`** → agrega la cabecera `RateLimit`, que le dice al cliente cuántas peticiones le quedan.
+- **Cuentan todos los intentos**, también los logins correctos: con 10 logins seguidos en `requests.http`, el siguiente da `429`.
+- **Se guarda en memoria** → reiniciar la API pone los contadores en cero (útil en desarrollo). Con varias instancias, cada una contaría por su lado y haría falta un almacén compartido, como Redis.
+- **Detrás de un proxy** (el del hosting) todas las peticiones parecen venir de la misma IP. Al hacer el deploy hay que configurar `app.set("trust proxy", 1)`.
+
+### 5) Límite de tamaño del body
+
+```ts
+app.use(express.json({ limit: "100kb" }));
+```
+
+```ts
+// manejadorDeErrores.ts
+if (err.type === "entity.too.large") {
+  return responderError(res, 413, {
+    description: "El cuerpo de la solicitud es demasiado grande",
+    codigo: "PAYLOAD_DEMASIADO_GRANDE",
+  });
+}
+```
+
+- Leer un JSON gigante consume memoria y CPU **antes** de que Zod pueda rechazarlo. El límite lo corta de entrada.
+- **`413 Content Too Large`** → es el status para esto. Se detecta por `err.type`, igual que `entity.parse.failed` (Lección 4).
+
+### 6) Un login que no revela qué emails existen
+
+La Lección 9 ya daba el mismo mensaje para "email inexistente" y "contraseña incorrecta", pero quedaba otra pista: **el tiempo**. Si el email no existía no se ejecutaba argon2 (que es lento a propósito), así que la respuesta llegaba mucho más rápido. Eso es un **ataque de tiempo** (*timing attack*).
+
+```ts
+async login(datos: LoginInput) {
+  // Hash de una contraseña que no pertenece a nadie. Se usa para que el login
+  // tarde lo mismo exista o no el usuario, y no revele qué emails tienen cuenta.
+  const hashFalso = hashearPassword("contraseña-que-no-pertenece-a-nadie");
+  const usuario = await authRepository.buscarPorEmailConPassword(datos.email);
+  const hashAComparar = usuario?.passwordHash ?? (await hashFalso);
+  const passwordValida = await verificarPassword(hashAComparar, datos.password);
+
+  if (!usuario || !passwordValida) {
+    throw new ReglaDeNegocioError("CREDENCIALES_INVALIDAS", "Email o contraseña incorrectos");
+  }
+  // ...
+}
+```
+
+- Ahora **siempre** se ejecuta `verificarPassword`: con el hash real o con el falso.
+- **`??`** usa el hash falso solo si no se encontró usuario.
+- Probado: un login con email existente tardó 58 ms y uno con email inexistente, 52 ms.
+
+### 7) Probarlo
+
+| Caso | Resultado |
+|------|-----------|
+| Cualquier respuesta | Cabeceras de helmet y `RateLimit`; sin `X-Powered-By` |
+| `Origin: http://localhost:5173` | Trae `Access-Control-Allow-Origin` |
+| `Origin: https://malo.com` | Sin `Access-Control-Allow-Origin` |
+| Body de más de 100 kb | `413`, `PAYLOAD_DEMASIADO_GRANDE` |
+| Intento 11 de login | `429`, `DEMASIADAS_SOLICITUDES`; las demás rutas siguen respondiendo |
+
+> 🍽️ **Analogía:** en la puerta del restaurante hay un **patovica**. Antes de que nadie llegue al mozo, controla cuántas veces entró cada persona (*rate limit*), no deja pasar a quien viene con un bulto enorme (límite de tamaño) y, si alguien insiste con la llave de una habitación, a los 10 intentos lo frena (`limiteAutenticacion`). Los **carteles** de la entrada avisan las reglas de la casa (helmet), y la **lista de restaurantes amigos** (CORS) la controla el cliente educado que la lee; quien no la respeta igual tiene que pasar por el patovica y por la tarjeta (`autenticar`).
+
+---
+
 ## 🤖 Comandos de Claude Code
 
 - `/commit-and-push [mensaje]`: revisa los cambios, crea el commit y hace push a la rama actual.
-- `/setup-db`: configura desde cero PostgreSQL (Docker) + Prisma 7 en un proyecto Node/TypeScript: pregunta nombre de la base, usuario, contraseña, contenedor y puerto, y arma `compose.yaml`, `.env`, cliente, seed, scripts y la primera migración.
+- `/setup-api`: crea desde cero una API con Node, Express 5 y TypeScript: arquitectura en capas, validación con Zod, formato `{ meta, response, error }`, login con argon2 y JWT, roles y seguridad básica. Al terminar el proyecto todavía no compila: falta correr `/setup-db`.
+- `/setup-db`: se corre después de `/setup-api` (si falta esa estructura, frena sin tocar nada). Agrega PostgreSQL (Docker) + Prisma 7: pregunta nombre de la base, usuario, contraseña, contenedor y puerto, y arma `compose.yaml`, el cliente, el modelo `Usuario`, un modelo de ejemplo, el seed con un admin, los scripts y la primera migración.

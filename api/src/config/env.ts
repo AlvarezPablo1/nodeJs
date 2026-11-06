@@ -7,6 +7,10 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1, "Falta DATABASE_URL"),
   JWT_SECRET: z.string().min(32, "JWT_SECRET tiene que tener al menos 32 caracteres"),
   JWT_EXPIRA_EN_SEGUNDOS: z.coerce.number().int().positive().default(28800),
+  CORS_ORIGINS: z
+  .string()
+  .default("http://localhost:5173")
+  .transform((valor) => valor.split(",").map((origen) => origen.trim())),
 });
 
 const resultado = envSchema.safeParse(process.env);
